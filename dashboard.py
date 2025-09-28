@@ -241,7 +241,7 @@ while True:
                     # 2. Número de la Unidad (Patente/ID) con el recuadro oscuro/semitransparente
                     st.markdown(
                         f'<p style="text-align: center; margin-bottom: 10px; margin-top: 0px;">'
-                        f'<span style="background-color: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 5px; font-size: 1.2em; font-weight: 900;">'
+                        f'<span style="background-color: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 5px; font-size: 1.5em; font-weight: 900;">'
                         f'{nombre_unidad_display}'
                         f'</span>'
                         f'</p>', 
@@ -257,7 +257,7 @@ while True:
                     )
 
                     # 4. Estado 
-                    st.markdown(f'<p style="font-size: 1.1em; margin-top: 0px; opacity: 1.1; text-align: center; margin-bottom: 0px;">{estado_display}</p>', unsafe_allow_html=True)
+                    st.markdown(f'<p style="font-size: 1.0em; margin-top: 0px; opacity: 1.1; text-align: center; margin-bottom: 0px;">{estado_display}</p>', unsafe_allow_html=True)
                     
                     # Cierra el div del fondo de color
                     st.markdown('</div>', unsafe_allow_html=True)

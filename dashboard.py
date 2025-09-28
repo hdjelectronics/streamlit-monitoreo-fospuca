@@ -241,7 +241,7 @@ while True:
                     # 2. Número de la Unidad (Patente/ID) con el recuadro oscuro/semitransparente
                     st.markdown(
                         f'<p style="text-align: center; margin-bottom: 10px; margin-top: 0px;">'
-                        f'<span style="background-color: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 5px; font-size: 1.5em; font-weight: 900;">'
+                        f'<span style="background-color: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 5px; font-size: 1.2em; font-weight: 900;">'
                         f'{nombre_unidad_display}'
                         f'</span>'
                         f'</p>', 

@@ -230,9 +230,9 @@ while True:
                     
                     # Lógica de color dinámico para la VELOCIDAD
                     color_velocidad = "white"
-                    if velocidad_float > 35.0:
+                    if velocidad_float > 74.0:
                         color_velocidad = "#D32F2F"  # ROJO (Exceso)
-                    elif velocidad_float >= 40.0:
+                    elif velocidad_float >= 70.0:
                         color_velocidad = "#FF9800"  # NARANJA (Advertencia en el límite)
 
                     # 1. Inicia el contenedor principal con el color de fondo

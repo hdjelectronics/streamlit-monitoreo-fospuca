@@ -394,7 +394,7 @@ placeholder = st.empty()
 # NUEVO PLACEHOLDER para el Historial de Logs
 log_placeholder = st.empty() 
 
-STOP_THRESHOLD_MINUTES = 7.0
+STOP_THRESHOLD_MINUTES = 10.0
 SPEED_THRESHOLD_KPH = 70
 
 

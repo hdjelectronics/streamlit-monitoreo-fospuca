@@ -53,7 +53,8 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
     
     # 3. Definir los umbrales de tiempo
     UMBRAL_ENCENDIDA = timedelta(minutes=5)
-    UMBRAL_APAGADA = timedelta(hours=1, minutes=10) 
+    # 🚨 MODIFICACIÓN DE UMBRAL (1 hora y 10 minutos)
+    UMBRAL_APAGADA = timedelta(hours=1, minutes=10)
     
     # 4. Aplicar la lógica de Falla GPS
     es_falla_gps = False
@@ -67,7 +68,7 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
             minutos_sin_reportar = diferencia_tiempo.total_seconds() / 60.0
             motivo_falla = f"Encendida **{minutos_sin_reportar:.0f} minutos** sin reportar (Umbral 5 min)."
     else: # Unidad Apagada (Ignition = False)
-        # Condición: Apagada Y diferencia > 1 hora
+        # Condición: Apagada Y diferencia > 1 hora y 10 minutos
         if diferencia_tiempo > UMBRAL_APAGADA:
             es_falla_gps = True
             # Calcular horas/minutos sin reportar para el motivo
@@ -78,10 +79,10 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
             tiempo_display = ""
             if horas > 0:
                 tiempo_display += f"{horas} hora(s)"
-            if minutos > 0 or (horas == 0 and minutos == 0): # Asegurar que se muestre algo si es justo 1h
+            if minutos > 0 or (horas == 0 and minutos == 0): # Asegurar que se muestre algo si es justo el umbral
                 tiempo_display += f" y {minutos} minuto(s)" if horas > 0 else f"{minutos} minuto(s)"
 
-            motivo_falla = f"Apagada **{tiempo_display.strip()}** sin reportar (Umbral 1h)."
+            motivo_falla = f"Apagada **{tiempo_display.strip()}** sin reportar (Umbral 1h 10min)."
             
     # 5. Aplicar el estado y estilo si es Falla GPS
     if es_falla_gps:
@@ -115,8 +116,12 @@ def obtener_audio_base64(audio_path):
 
 # 🚨 EJECUCIÓN DEL BASE64 UNA SOLA VEZ AL INICIO 🚨
 # **Asegúrate de cambiar los nombres de los archivos si es necesario.**
-AUDIO_BASE64_PARADA = obtener_audio_base64("parada.mp3") 
-AUDIO_BASE64_VELOCIDAD = obtener_audio_base64("velocidad.mp3") 
+# Nota: Si no tienes los archivos 'parada.mp3' y 'velocidad.mp3', esta parte fallará.
+# Si no usas audio, puedes comentar estas dos líneas.
+# AUDIO_BASE64_PARADA = obtener_audio_base64("parada.mp3") 
+# AUDIO_BASE64_VELOCIDAD = obtener_audio_base64("velocidad.mp3") 
+AUDIO_BASE64_PARADA = None # Placeholder si no se usa audio
+AUDIO_BASE64_VELOCIDAD = None # Placeholder si no se usa audio
 
 def reproducir_alerta_sonido(base64_str):
     """
@@ -601,6 +606,7 @@ with st.sidebar:
 # === BUCLE PRINCIPAL (while True) - Lógica Completa ===
 
 placeholder = st.empty()
+
 # NUEVO PLACEHOLDER para el Historial de Logs
 log_placeholder = st.empty() 
 
@@ -710,6 +716,10 @@ while True:
             # --- LÓGICA DE PARADA LARGA (Movimiento Detectado - Log FIN Parada Larga) ---
             if is_moving:
                 
+                # 🚨 CORRECCIÓN 2 APLICADA: Forzamos la duración de parada a cero en el DataFrame 
+                # para que la tarjeta visual se actualice inmediatamente.
+                df_data_original.loc[index, 'STOP_DURATION_MINUTES'] = 0.0 
+                
                 if last_state.get('alerted_stop_minutes'):
                     
                     hora_log = now.strftime('%H:%M:%S')
@@ -753,8 +763,7 @@ while True:
                 if stop_duration_minutes > STOP_THRESHOLD_MINUTES and is_out_of_hq:
                     last_state['alerted_stop_minutes'] = stop_duration_minutes
                 
-            # 🚨 CORRECCIÓN CRUCIAL: SE ELIMINA LA LÍNEA QUE CAUSABA EL KeyError 
-            # (Ya no se necesita escribir en st.session_state porque current_stop_state es una referencia global)
+            # ❌ CORRECCIÓN 1 APLICADA: Línea eliminada que causaba KeyError.
             # st.session_state['unidades_stop_state'][unit_id_api] = last_state 
     
     # Lógica de Filtrado Condicional

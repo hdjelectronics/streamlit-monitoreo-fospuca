@@ -6,7 +6,9 @@ import pandas as pd
 import time
 import numpy as np
 from typing import List, Dict, Any
-import base64 
+import base64
+import streamlit.components.v1 as components 
+#import st.components.v1 as components # <-- NECESARIO para inyectar HTML de bajo nivel
 import os 
 # MODIFICACIÓN CRÍTICA: Importar datetime, timedelta y timezone de forma explícita
 from datetime import datetime, timedelta, timezone 
@@ -124,10 +126,8 @@ def obtener_audio_base64(audio_path):
 
 # 🚨 EJECUCIÓN DEL BASE64 UNA SOLA VEZ AL INICIO 🚨
 # **Asegúrate de cambiar los nombres de los archivos si es necesario.**
-# AUDIO_BASE64_PARADA = obtener_audio_base64("parada.mp3") 
-# AUDIO_BASE64_VELOCIDAD = obtener_audio_base64("velocidad.mp3") 
-AUDIO_BASE64_PARADA = None # Placeholder si no se usa audio
-AUDIO_BASE64_VELOCIDAD = None # Placeholder si no se usa audio
+AUDIO_BASE64_PARADA = obtener_audio_base64("parada.mp3") 
+AUDIO_BASE64_VELOCIDAD = obtener_audio_base64("velocidad.mp3") 
 
 def reproducir_alerta_sonido(base64_str):
     """
@@ -151,8 +151,6 @@ def reproducir_alerta_sonido(base64_str):
     </script>
     """
     st.markdown(audio_html, unsafe_allow_html=True)
-
-
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Monitoreo GPS - FOSPUCA",
@@ -193,57 +191,65 @@ except KeyError:
     st.info("Asegúrese de configurar el archivo '.streamlit/secrets.toml' o la configuración de 'Secrets' en la nube.")
     st.stop() 
 
+# --- CONFIGURACIÓN DINÁMICA DE CARGA ---
 
-# --- CONFIGURACIÓN MULTI-FLOTA (Se mantiene la misma configuración) ---
-FLOTAS_CONFIG = {   
+# Nombre de la carpeta que contendrá los archivos JSON de las flotas
+CONFIG_DIR = "configuracion_flotas" 
+
+def cargar_configuracion_flotas(config_dir: str = CONFIG_DIR) -> Dict[str, Dict[str, Any]]:
+    """
+    Carga dinámicamente la configuración de las flotas desde archivos JSON
+    en el directorio especificado.
     
-    "Baruta": {
-        "ids": "330882,319393,304624,314780,300968,314766,328710,314841,323056,319338,310625,334716,303071,322990,307999,305206,324944,323042,314827,323512,301440,324653,301347,301411,325762,314820,331491,330249,335231,329771,330141,328587,330247,330980,330243,329081,330220,325271,330226,330918,331490,331498,323009,303487,313336,328626,326027,314855,328847,301295,310382,324721,309730,335216,328623",
-        "lat_sede": 10.420910,
-        "lon_sede": -66.933790
-    },
-    "Chacao": {
-        "ids": "324551,323134,324723,322999,305462,324722,309721,314824,331492,325270,334710,334683,335249",
-        "lat_sede": 10.487110,
-        "lon_sede": -66.867390
-    },
-    "El Tigre": {
-        "ids": "308193,303031,303048,308204,328483,308221,328469,303039,308185,308189,308187,309229,305419,305445,308208,308222,335091,308228,314762",
-        "lat_sede": 8.896940,
-        "lon_sede": -64.213300
-    },
-    "Girardot": {
-        "ids": "330238,330866,331233,330886,331442,328609,331231,328968,330225,330888,329769,314811,329084,328484,328473,328462,328443,328493,329083,328477,319360,319363,319324,319346,319321,328653,328614,324946",
-        "lat_sede": 10.220410,
-        "lon_sede": -67.577930
-    },
-    "Guayana": {
-        "ids": "309729,308046,309715,309705,323092,310632,309701,309713,334690,325267,308179,303054,310621,310649,310541,310633,322992,319408,319311,309691,309731,310496,325264,310652,330909,314828,330276,310671,318796,310478,310614,318778,310551,310533,309726,310630,318803,310333,309724,319326,310622,310480,310550,328703,314834,309228,303080,318816,318831,318847,330856,328846",
-        "lat_sede": 8.248220,  
-        "lon_sede": -62.819900
-    },
-    "Hatillo": {
-        "ids": "310616,314795,314776,314833,319395,305415,309255,309249,310336,318804,328456,331914,328482,331912,328643,333203,314823,328646,330858,324950,328705,319373,310530,328611,334709,314772,327390,309737",
-        "lat_sede": 10.420870,  
-        "lon_sede": -66.864310
-    },
-    "Iribarren": {
-        "ids": "319388,307296,307321,328704,307291,307338,307327,307325,309693,307289,308225,307303,307311,308191,319398,307322,307332,307340,319382,319411,319417,319404,319308,305410,314831,309740,314839,309706,323078,309250,328467,309230,323049,310596,310626,323041,328502,330887,308019",
-        "lat_sede": 10.076970,
-        "lon_sede": -69.352470
-    },
-    "Maneiro": {
-        "ids": "328601,307300,307317,307301,301893,310389,310494,310629,318795,310460,334708,319412,309599,328471,330208",
-        "lat_sede": 10.9523,
-        "lon_sede": -63.8630
-    },
-    "San Diego": {
-        "ids": "302005,335250,322991,301848,323144,301931,301873,301975,301891,308190,314809,319378,307304",
-        "lat_sede": 10.191370,
-        "lon_sede": -67.961420
-    },
+    Cada archivo JSON debe tener las claves: "ids", "lat_sede", "lon_sede".
+    El nombre del archivo (ej: 'El_Tigre.json') se convierte en la clave (ej: 'El Tigre').
+    """
+    flotas_config = {}
     
-}
+    # Crea el directorio si no existe y avisa.
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir)
+        print(f"Directorio de configuración '{config_dir}' creado. ¡Agrega tus archivos JSON!")
+        return {} # Retorna un diccionario vacío
+
+    for filename in os.listdir(config_dir):
+        if filename.endswith(".json"):
+            # 1. Obtiene el nombre del archivo sin la extensión (ej: "El_Tigre")
+            nombre_flota_file = os.path.splitext(filename)[0]
+            # 2. Reemplaza los guiones bajos por espacios para restaurar el nombre original (ej: "El Tigre")
+            nombre_flota = nombre_flota_file.replace("_", " ")
+
+            filepath = os.path.join(config_dir, filename)
+            
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                    # 3. Verifica que el archivo JSON esté completo antes de agregarlo
+                    if all(key in data for key in ["ids", "lat_sede", "lon_sede"]):
+                        flotas_config[nombre_flota] = data
+                        # print(f" -> Flota cargada: {nombre_flota}") # Descomentar para debug
+                    else:
+                        print(f" [ADVERTENCIA] Archivo '{filename}' omitido: faltan claves (ids, lat_sede, lon_sede).")
+
+            except json.JSONDecodeError:
+                print(f" [ERROR] No se pudo parsear el archivo JSON: {filename}. Revisa su formato.")
+            except Exception as e:
+                print(f" [ERROR] Ocurrió un error al cargar {filename}: {e}")
+
+    return flotas_config
+
+# --- CONFIGURACIÓN MULTI-FLOTA (Se carga dinámicamente) ---
+# Se utiliza la función para cargar la configuración al inicio del script
+FLOTAS_CONFIG = cargar_configuracion_flotas()
+
+# Puedes añadir una verificación opcional si quieres que el script no corra sin flotas
+if not FLOTAS_CONFIG:
+    print("¡ADVERTENCIA! No se encontró ninguna configuración de flota. El dashboard puede no funcionar correctamente.")
+    # Si usas Streamlit, podrías detener la ejecución aquí: 
+    # st.error("No se pudo cargar la configuración de flotas. Por favor, revisa la carpeta 'configuracion_flotas'.")
+    # st.stop()
+# -----------------------------------------------------------
 # --- DISTANCIA DE LA SEDE (PARA ASUMIR EN SEDE) (100MTS fijos) ---
 PROXIMIDAD_KM = 0.1
 
@@ -791,7 +797,46 @@ with st.sidebar:
     # 7. PLACEHOLDER PARA EL DEBUG Y HORA (AHORA FUERA DEL EXPANDER)
     debug_status_placeholder = st.empty()
 
-# === BUCLE PRINCIPAL (while True) - Lógica Completa ===
+    placeholder = st.empty()
+    log_placeholder = st.empty() 
+    alerta_stop_placeholder = st.empty()
+    alerta_velocidad_placeholder = st.empty()
+    metricas_placeholder = st.empty()
+    debug_status_placeholder = st.empty()
+
+    # AÑADIR ESTOS DOS NUEVOS PLACEHOLDERS PARA EL AUDIO
+    audio_stop_placeholder = st.empty()
+    audio_velocidad_placeholder = st.empty()
+    # --- Función para generar la línea de métrica con estilo ---
+    def format_metric_line(label, value=None, value_size="1.5rem", is_header=False, is_section_title=False, detail_html=""):
+        """Genera el HTML para las métricas con estilo unificado: Etiqueta a la izquierda, Valor a la derecha."""
+            
+        text_style = "color: white; font-family: 'Consolas', 'Courier New', monospace; font-size: 1rem;"
+            
+        # 1. Título PRINCIPAL (Estadística de la Flota)
+        if is_header:
+            label_html = f'<p style="font-size: 1.2rem; font-weight: bold; margin-bottom: 0px;">{label}</p>'
+            return f'<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;">{label_html}</div>'
+                
+        # 2. Título de SECCIÓN (Estado Operacional, Resguardo) - SOLO TEXTO SIN VALOR
+        if is_section_title:
+            return f'<p style="font-size: 1.1rem; font-weight: bold; margin-bottom: 5px; color: white;">{label}</p>'
+
+        # 3. Métrica Normal (Etiqueta: Valor)
+        value_html = f'<span style="font-size: {value_size}; font-weight: bold; color: white;">{value}</span>'
+            
+        # Contenedor de la métrica
+        html_content = f"""
+        <p style="{text_style} display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <span style="white-space: nowrap;">{label}:</span>
+            <span style="display: flex; align-items: baseline;">{value_html} {detail_html}</span>
+        </p>
+        """
+        return html_content
+
+    
+
+# === BUCLE PRINCIPAL (while True) - Código Corregido para Audio ===
 
 placeholder = st.empty()
 log_placeholder = st.empty() 
@@ -821,10 +866,13 @@ while True:
             st.info("👋 Por favor, **seleccione una Flota** en el panel lateral (Sidebar) para comenzar el monitoreo en tiempo real.")
             
         # Limpiar Placeholders
+        # 🚨 LIMPIEZA DE LOS NUEVOS PLACEHOLDERS DE AUDIO 🚨
+        with audio_stop_placeholder.container(): st.empty()
+        with audio_velocidad_placeholder.container(): st.empty()
         with alerta_velocidad_placeholder.container(): st.empty()
         with alerta_stop_placeholder.container(): st.empty()
         with metricas_placeholder.container(): st.empty()
-        with debug_status_placeholder.container(): st.empty() # Limpiar el nuevo placeholder de debug
+        with debug_status_placeholder.container(): st.empty()
         with log_placeholder.container(): st.empty() 
             
         time.sleep(1) 
@@ -940,6 +988,7 @@ while True:
                     del st.session_state['alertas_velocidad_descartadas'][unidad_id]
                 
                 # Desactivamos las banderas de reproducción si la unidad se mueve
+                # Esto es CRÍTICO para detener la alarma si se mueve
                 if st.session_state.get('reproducir_audio_alerta'):
                      st.session_state['reproducir_audio_alerta'] = False
                 if st.session_state.get('reproducir_audio_velocidad'): 
@@ -1089,80 +1138,64 @@ while True:
                 estado_critico = "🚨 CRÍTICO" if row['VELOCIDAD'] > SPEED_THRESHOLD_KPH + 4.0 else "⚠️ ALERTA"
                 mensaje_alerta_speed += (f"**{nombre_unidad}** ({estado_critico} a {velocidad_formateada}):\n---\n")
     
-    # --- 1. RENDERIZADO DEL TEXT BOX DE ALERTA (PARADA LARGA) ---
+    # =========================================================================
+    # --- RENDERIZADO DEL TEXT BOX DE ALERTA (PARADA LARGA) ---
+    # =========================================================================
     unique_time_id = int(time.time() * 1000) 
     
+    # 🚨 CORRECCIÓN DE AUDIO: Inyección Aislada para evitar interrupciones 🚨
+    with audio_stop_placeholder.container():
+        if st.session_state.get('reproducir_audio_alerta'):
+             reproducir_alerta_sonido(AUDIO_BASE64_PARADA)
+        else:
+             audio_stop_placeholder.empty() # Limpia el placeholder de audio cuando no debe sonar
+             
     with alerta_stop_placeholder.container():
         if not unidades_en_alerta_stop.empty:
             total_alertas_pendientes = len(unidades_en_alerta_stop)
             st.markdown(f"#### 🚨 Alerta de Parada Larga ({total_alertas_pendientes})")
             st.markdown("---")
             
-            if st.session_state.get('reproducir_audio_alerta'):
-                 reproducir_alerta_sonido(AUDIO_BASE64_PARADA)
+            # La llamada a reproducir_alerta_sonido ha sido movida arriba.
                  
             st.warning(mensaje_alerta_stop) 
             
-            st.markdown("##### Descartar Paradas:")
-            cols_btn = st.columns(3) 
-            
-            for index, row in unidades_en_alerta_stop.iterrows():
-                unidad_id = row['UNIDAD']
-                nombre_display = unidad_id.split('-')[0]
-                col_index = index % 3
-                
-                with cols_btn[col_index]:
-                    st.button(
-                        f"Aceptar: {nombre_display}", 
-                        key=f"descartar_stop_{unidad_id}_{unique_time_id}", 
-                        on_click=descartar_alerta_stop,
-                        args=(unidad_id,),
-                        type="primary"
-                    )
-                    
             def aceptar_todas_paradas():
                 for uid in unidades_en_alerta_stop['UNIDAD']:
                     st.session_state['alertas_descartadas'][uid] = True
                 st.session_state['reproducir_audio_alerta'] = False
                     
             st.button(
-                "Aceptar TODAS las Paradas",
+                "✅ Aceptar y Silenciar TODAS las Paradas", 
                 key=f"descartar_all_stops_{unique_time_id}",
                 on_click=aceptar_todas_paradas,
-                type="secondary"
+                type="primary", 
+                use_container_width=True
             )
         else:
             st.session_state['reproducir_audio_alerta'] = False
             alerta_stop_placeholder.empty()
 
-    # --- 2. RENDERIZADO DEL TEXT BOX DE ALERTA (EXCESO VELOCIDAD) ---
+    # =========================================================================
+    # --- RENDERIZADO DEL TEXT BOX DE ALERTA (EXCESO VELOCIDAD) ---
+    # =========================================================================
+    
+    # 🚨 CORRECCIÓN DE AUDIO: Inyección Aislada para evitar interrupciones 🚨
+    with audio_velocidad_placeholder.container():
+        if st.session_state.get('reproducir_audio_velocidad'):
+             reproducir_alerta_sonido(AUDIO_BASE64_VELOCIDAD)
+        else:
+             audio_velocidad_placeholder.empty() # Limpia el placeholder de audio cuando no debe sonar
+             
     with alerta_velocidad_placeholder.container():
         if not unidades_en_alerta_speed.empty:
             total_alertas_pendientes_speed = len(unidades_en_alerta_speed)
             st.markdown(f"#### ⚠️ Exceso de Velocidad ({total_alertas_pendientes_speed})")
             st.markdown("---")
             
-            if st.session_state.get('reproducir_audio_velocidad'):
-                 reproducir_alerta_sonido(AUDIO_BASE64_VELOCIDAD)
+            # La llamada a reproducir_alerta_sonido ha sido movida arriba.
             
             st.error(mensaje_alerta_speed) 
-            
-            st.markdown("##### Descartar Excesos:")
-            cols_btn_speed = st.columns(3) 
-            
-            for index, row in unidades_en_alerta_speed.iterrows():
-                unidad_id = row['UNIDAD']
-                nombre_display = unidad_id.split('-')[0]
-                col_index = index % 3
-                
-                with cols_btn_speed[col_index]:
-                    st.button(
-                        f"Aceptar: {nombre_display}",
-                        key=f"descartar_speed_{unidad_id}_{unique_time_id}", 
-                        on_click=descartar_alerta_velocidad,
-                        args=(unidad_id,),
-                        type="primary"
-                    )
             
             def aceptar_todas_velocidades():
                 for uid in unidades_en_alerta_speed['UNIDAD']:
@@ -1170,10 +1203,11 @@ while True:
                 st.session_state['reproducir_audio_velocidad'] = False
                     
             st.button(
-                "Aceptar TODAS las Alertas de Velocidad",
+                "✅ Aceptar y Silenciar TODOS los Excesos", 
                 key=f"descartar_all_speed_{unique_time_id}",
                 on_click=aceptar_todas_velocidades,
-                type="secondary"
+                type="primary",
+                use_container_width=True
             )
         else:
             st.session_state['reproducir_audio_velocidad'] = False
@@ -1208,104 +1242,43 @@ while True:
             </p>
             """
             return html_content
-
-        # --- INICIO DEL RENDERIZADO (SIMULANDO IMAGEN 2) ---
-        if not is_fallback:
-            # 🚨 CAMBIO: Se envuelve el bloque de estadísticas en un st.expander con expanded=False 🚨
-            with st.expander("📊 Estadística de Flota", expanded=False):
+        
+        if not is_fallback: 
             
-                # Lógica de cálculo (MISMA LÓGICA DE TU CÓDIGO)
-                total_unidades_flota = len(df_data_original) 
+            # Lógica para calcular métricas (ejemplo, tienes que completarla)
+            total_unidades = len(df_data_original)
+            unidades_encendidas = len(df_data_original[df_data_original["IGNICION"].str.contains("Encendida")])
+            unidades_apagadas = len(df_data_original[df_data_original["IGNICION"].str.contains("Apagada ❄️")])
+            unidades_en_sede = len(df_data_original[df_data_original["IGNICION"].str.contains("(Sede)")])
+            unidades_falla_gps = len(df_data_original[df_data_original["IGNICION"].str.contains("Falla GPS")])
+            
+            # Renderizado
+            st.markdown(format_metric_line("Estadísticas", is_header=True), unsafe_allow_html=True)
+            st.markdown(format_metric_line("Total Flota", total_unidades), unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown(format_metric_line("Estado Operacional", is_section_title=True), unsafe_allow_html=True)
+            st.markdown(format_metric_line("Encendidas", unidades_encendidas), unsafe_allow_html=True)
+            st.markdown(format_metric_line("Apagadas (Ruta)", unidades_apagadas), unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown(format_metric_line("Resguardo y Fallas", is_section_title=True), unsafe_allow_html=True)
+            st.markdown(format_metric_line("En Sede", unidades_en_sede), unsafe_allow_html=True)
+            st.markdown(format_metric_line("Falla GPS", unidades_falla_gps), unsafe_allow_html=True)
+            
+            
+            # --- RENDERIZADO DE DEBUG Y HORA ---
+            with debug_status_placeholder.container():
                 
-                # Se excluye Falla GPS del conteo de Resguardo y En Ruta para mayor precisión operativa
-                df_operando = df_data_original[~df_data_original["IGNICION"].str.contains("Falla GPS")].copy()
+                # Obtener la hora actual de Venezuela
+                hora_actual = obtener_hora_venezuela().strftime('%Y-%m-%d %H:%M:%S')
                 
-                unidades_resguardo_total = df_operando[df_operando["IGNICION"].str.contains(
-                    "Resguardo \(Sede\)|Encendida \(Sede\)|Resguardo \(Fuera de Sede\)"
-                )].shape[0]
-                unidades_en_ruta = df_operando.shape[0] - unidades_resguardo_total
-                
-                unidades_falla_gps = df_data_original[df_data_original["IGNICION"].str.contains("Falla GPS")].shape[0]
-                
-                unidades_encendidas_ruta = df_operando[
-                    df_operando["IGNICION"].str.contains("Encendida 🔥")
-                ].shape[0]
-                unidades_apagadas_ruta = df_operando[
-                    df_operando["IGNICION"].str.contains("Apagada ❄️")
-                ].shape[0]
-                unidades_resguardo_sede_apagada = df_operando[df_operando["IGNICION"].str.contains("Resguardo \(Sede\)")].shape[0]
-                unidades_resguardo_sede_encendida = df_operando[df_operando["IGNICION"].str.contains("Encendida \(Sede\)")].shape[0]
-                unidades_resguardo_fuera = df_operando[df_operando["IGNICION"].str.contains("Resguardo \(Fuera de Sede\)")].shape[0]
-                
-                total_resguardo_sede = unidades_resguardo_sede_apagada + unidades_resguardo_sede_encendida
-
-                
-                # --- RENDERIZADO CON HTML COMPACTO ---
-                
-                # 1. TÍTULO PRINCIPAL: Estadística de la Flota
-                st.markdown(format_metric_line("Estadística de la Flota 🚚", is_header=True), unsafe_allow_html=True)
-                
-                # Total Unidades de Flota
-                st.markdown(format_metric_line("Total Unidades Flota", total_unidades_flota, value_size="2.0rem"), unsafe_allow_html=True)
-                st.markdown(format_metric_line("Unidades Falla GPS", unidades_falla_gps), unsafe_allow_html=True) # NUEVA MÉTRICA
-                st.markdown('<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;"></div>', unsafe_allow_html=True)
-                
-                # 2. ESTADO OPERACIONAL (TÍTULO DE SECCIÓN SIN VALOR)
-                st.markdown(format_metric_line("Estado Operacional 🔥", is_section_title=True), unsafe_allow_html=True)
-                
-                # Detalle de Encendidas en Ruta
-                delta_encendidas_ruta = f'<span style="color: #4CAF50; font-size: 0.9em; font-weight: bold; margin-left: 10px; white-space: nowrap;">↑ {unidades_encendidas_ruta} Encendidas</span>'
-
-                # Unidades en Ruta
+                # Renderizar en la barra lateral
                 st.markdown(
-                    format_metric_line("Unidades en Ruta", unidades_en_ruta, 
-                                    detail_html=delta_encendidas_ruta), 
+                    f'<div style="text-align: center; color: #888888; margin-top: 15px; font-size: 0.8em;">'
+                    f'Última actualización:<br><strong>{hora_actual} VET</strong>'
+                    f'</div>', 
                     unsafe_allow_html=True
                 )
-                # Unidades Apagadas en Ruta
-                st.markdown(format_metric_line("Unidades Apagadas (Ruta)", unidades_apagadas_ruta), unsafe_allow_html=True)
-
-                st.markdown('<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;"></div>', unsafe_allow_html=True)
-                
-                # 3. RESGUARDO (TÍTULO DE SECCIÓN SIN VALOR)
-                st.markdown(format_metric_line("Resguardo 🛡️", is_section_title=True), unsafe_allow_html=True)
-                
-                # Total Resguardo Sede (Unidades en HQ, Encendidas o Apagadas)
-                st.markdown(format_metric_line("Total Resguardo Sede", total_resguardo_sede), unsafe_allow_html=True)
-                
-                # Detalle Resguardo Sede
-                st.markdown(
-                    f'<p style="font-family: monospace; font-size: 0.9rem; color: #aaaaaa; margin-top: -5px; margin-bottom: 5px;">'
-                    f'Detalle: {unidades_resguardo_sede_encendida} Encendidas / {unidades_resguardo_sede_apagada} Apagadas.'
-                    f'</p>', 
-                    unsafe_allow_html=True
-                )
-                
-                # Total Resguardo Fuera de Sede
-                st.markdown(format_metric_line("Total Resguardo Fuera Sede", unidades_resguardo_fuera), unsafe_allow_html=True)
-                
-            st.markdown("---") 
-            
-            # --- RENDERIZADO DEL DEBUG Y HORA (FUERA DEL EXPANDER) ---
-            with debug_status_placeholder.container():
-                current_time = now.strftime('%H:%M:%S')
-                st.info(f"Última Actualización: **{current_time}**") 
-                st.markdown("---")
-                st.header("DEBUG API STATUS")
-                
-                st.success(f"Conexión **OK**. Se recibieron {total_unidades_flota} registros.") 
-                if filtro_estado_activo != "Mostrar Todos" or filtro_en_ruta_activo:
-                    st.info(f"Filtro Activo: **{filtro_descripcion}**. Mostrando **{len(df_data_mostrada)}** unidades.")
-                
-        else:
-            # (Lógica de Fallback sin cambios, pero movida al nuevo placeholder)
-            with debug_status_placeholder.container():
-                causa = df_data_original['UBICACION_TEXTO'].iloc[0].split(' - ')[1]
-                st.metric("Total Unidades", "Error")
-                st.error(f"❌ API Falló: {causa}")
-                st.markdown("---")
-                st.info(f"Última Actualización: **{now.strftime('%H:%M:%S')}**") 
-
+        
     # RENDERIZADO DEL LOG DE EVENTOS
     with log_placeholder.container():
         if st.session_state['log_historial']:
@@ -1432,7 +1405,7 @@ while True:
                             if not falla_motivo:
                                 st.caption(f"Último Reporte: **{last_report_display}**")
                                 
-                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})\")")
+                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})")
                         
                 st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             
@@ -1440,3 +1413,4 @@ while True:
     
     # 🚨 USO DEL PARÁMETRO DINÁMICO DE PAUSA 🚨
     time.sleep(TIME_SLEEP)
+

@@ -8,7 +8,93 @@ import numpy as np
 from typing import List, Dict, Any
 import base64 
 import os 
-import datetime 
+# MODIFICACIÓN CRÍTICA: Importar datetime, timedelta y timezone de forma explícita
+from datetime import datetime, timedelta, timezone 
+
+
+# --- CONFIGURACIÓN DE ZONA HORARIA Y LÓGICA DE TIEMPO ---
+
+# Definir la zona horaria de Venezuela (VET = UTC-4)
+VENEZUELA_TZ = timezone(timedelta(hours=-4))
+# Formato de fecha y hora requerido para parsear 'LastReportTime': 'Sep 30 2025 12:57PM'
+TIME_FORMAT = '%b %d %Y %I:%M%p'
+COLOR_FALLA_GPS = "#AAAAAA" # Gris para Falla GPS
+
+def obtener_hora_venezuela() -> datetime:
+    """Retorna el objeto datetime con la hora actual en la Zona Horaria de Venezuela (VET)."""
+    # Se crea un objeto aware (consciente) de la zona horaria.
+    return datetime.now(VENEZUELA_TZ)
+
+def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -> Dict[str, Any]:
+    """
+    Evalúa si la unidad debe cambiar a estado 'Falla GPS' y actualiza el diccionario de datos,
+    incluyendo el motivo específico de la falla y la hora del último reporte.
+    
+    :param unidad_data: Diccionario de datos de la unidad (debe contener 'LastReportTime' y 'ignition').
+    :param hora_venezuela: Objeto datetime con la hora actual de Venezuela.
+    :return: Diccionario de la unidad con el estado 'Falla GPS' y estilo actualizado si aplica.
+    """
+    last_report_str = unidad_data.get('LastReportTime')
+    ignicion_raw = unidad_data.get("ignition", "false").lower()
+    estado_ignicion = ignicion_raw == "true"
+    
+    if not last_report_str:
+        return unidad_data # No se puede verificar la falla sin un reporte de tiempo
+
+    try:
+        # 1. Parsear LastReportTime y ASIGNARLE la TZ de Venezuela.
+        last_report_dt = datetime.strptime(last_report_str, TIME_FORMAT).replace(tzinfo=VENEZUELA_TZ)
+    except ValueError:
+        # En caso de error de formato, retornamos los datos originales sin cambio.
+        return unidad_data 
+
+    # 2. Calcular la diferencia de tiempo
+    diferencia_tiempo: timedelta = hora_venezuela - last_report_dt
+    
+    # 3. Definir los umbrales de tiempo
+    UMBRAL_ENCENDIDA = timedelta(minutes=5)
+    UMBRAL_APAGADA = timedelta(hours=1)
+    
+    # 4. Aplicar la lógica de Falla GPS
+    es_falla_gps = False
+    motivo_falla = ""
+    
+    if estado_ignicion: # Unidad Encendida (Ignition = True)
+        # Condición: Encendida Y diferencia > 5 minutos
+        if diferencia_tiempo > UMBRAL_ENCENDIDA:
+            es_falla_gps = True
+            # Calcular minutos sin reportar
+            minutos_sin_reportar = diferencia_tiempo.total_seconds() / 60.0
+            motivo_falla = f"Encendida **{minutos_sin_reportar:.0f} minutos** sin reportar (Umbral 5 min)."
+    else: # Unidad Apagada (Ignition = False)
+        # Condición: Apagada Y diferencia > 1 hora
+        if diferencia_tiempo > UMBRAL_APAGADA:
+            es_falla_gps = True
+            # Calcular horas/minutos sin reportar para el motivo
+            segundos_sin_reportar = diferencia_tiempo.total_seconds()
+            horas = int(segundos_sin_reportar // 3600)
+            minutos = int((segundos_sin_reportar % 3600) // 60)
+            
+            tiempo_display = ""
+            if horas > 0:
+                tiempo_display += f"{horas} hora(s)"
+            if minutos > 0 or (horas == 0 and minutos == 0): # Asegurar que se muestre algo si es justo 1h
+                tiempo_display += f" y {minutos} minuto(s)" if horas > 0 else f"{minutos} minuto(s)"
+
+            motivo_falla = f"Apagada **{tiempo_display.strip()}** sin reportar (Umbral 1h)."
+            
+    # 5. Aplicar el estado y estilo si es Falla GPS
+    if es_falla_gps:
+        unidad_data['Estado_Falla_GPS'] = True # Bandera para fácil referencia
+        # 🚨 CAMBIO AÑADIDO: Guardar el motivo de la falla GPS 🚨
+        unidad_data['FALLA_GPS_MOTIVO'] = motivo_falla 
+        # 🚨 NUEVO CAMBIO AÑADIDO: Guardar el último tiempo de reporte (string original)
+        unidad_data['LAST_REPORT_TIME_FOR_DETAIL'] = last_report_str 
+        # Sobrescribimos el estado en el diccionario antes de que sea procesado por la lógica de sede/resguardo
+        unidad_data['IGNICION_OVERRIDE'] = "Falla GPS 🚫"
+        unidad_data['CARD_STYLE_OVERRIDE'] = f"background-color: {COLOR_FALLA_GPS}; padding: 15px; border-radius: 5px; color: black; margin-bottom: 0px;"
+
+    return unidad_data
 
 
 # --- 🚨 CONFIGURACIÓN DE AUDIO Y BASE64 (EJECUCIÓN ÚNICA AL INICIO) 🚨 ---
@@ -148,7 +234,23 @@ FLOTAS_CONFIG = {
     
 }
 # --- DISTANCIA DE LA SEDE (PARA ASUMIR EN SEDE) (100MTS fijos) ---
-PROXIMIDAD_KM = 0.2
+# 🚨 VALOR MODIFICADO: 0.1 KM (100 metros) 🚨
+PROXIMIDAD_KM = 0.1
+
+# --- 🚨 NUEVOS RESGUARDOS FUERA DE SEDE (ACTUALIZADO) 🚨 ---
+# 🚨 COLOR REEMPLAZADO POR EL CÓDIGO (191452) 🚨
+COLOR_RESGUARDO_SECUNDARIO = "#191452" 
+
+# Lista de coordenadas de resguardo secundario [Latitud, Longitud]
+COORDENADAS_RESGUARDO_SECUNDARIO = [
+    # Ubicación Anterior 1
+    [10.975240, -63.836690],
+    # Ubicación Anterior 2
+    [10.998340, -63.799760],
+    # Nueva Ubicación Añadida
+    [11.004680, -63.798240] 
+]
+# ----------------------------------------------------------------------
 
 # --- ENCABEZADO DE AUTENTICACION ---
 HEADERS = {
@@ -183,10 +285,20 @@ def get_card_style(ignicion_status, speed):
     elif "Encendida (Sede)" in ignicion_status:
         bg_color = "#B37305"  
         text_color = "white"
-
+        
     elif "Apagada" in ignicion_status:
         bg_color = "#D32F2F"  
         text_color = "white"
+
+    # AÑADIDO: Lógica de estilo para Resguardo Fuera de Sede
+    elif "Resguardo (Fuera de Sede)" in ignicion_status:
+        bg_color = COLOR_RESGUARDO_SECUNDARIO
+        text_color = "white"
+    
+    # NUEVA LÓGICA: Estilo para Falla GPS (gris con texto negro para el card)
+    elif "Falla GPS" in ignicion_status:
+        bg_color = COLOR_FALLA_GPS
+        text_color = "black"
         
     style = (
         f"background-color: {bg_color}; "
@@ -228,13 +340,16 @@ def get_fallback_data(error_type="Conexión Fallida"):
         "LATITUD": 0, 
         "LONGITUD": 0, 
         "UBICACION_TEXTO": f"FALLBACK - {error_type}", 
-        "CARD_STYLE": "background-color: #D32F2F; padding: 15px; border-radius: 5px; color: white; margin-bottom: 0px;"
+        "CARD_STYLE": "background-color: #D32F2F; padding: 15px; border-radius: 5px; color: white; margin-bottom: 0px;",
+        # Campos añadidos para evitar error al crear el DataFrame:
+        "FALLA_GPS_MOTIVO": None,
+        "LAST_REPORT_TIME_DISPLAY": None 
     }])
 
 # --- FUNCIÓN DE OBTENCIÓN Y FILTRADO DE DATOS DINÁMICA (TTL de 5 segundos) ---
 @st.cache_data(ttl=5)
 def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any]):
-    """Obtiene y limpia los datos de la API, aplicando la lógica de color por estado/sede."""
+    """Obtiene y limpia los datos de la API, aplicando la lógica de color por estado/sede, incluyendo Falla GPS."""
     
     flota_data = config.get(nombre_flota, config["Maneiro"])
     LAT_SEDE = flota_data["lat_sede"]
@@ -265,44 +380,90 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any]):
         
         if not lista_unidades:
             return get_fallback_data("Lista de Unidades Vacía (Revisa IDs)")
+        
+        # --- Obtener la hora de Venezuela antes del bucle ---
+        hora_actual_ve = obtener_hora_venezuela()
 
         # --- PROCESAMIENTO DE DATOS REALES ---
         datos_filtrados = []
         for unidad in lista_unidades:
-            ignicion_raw = unidad.get("ignition", "false").lower()
-            velocidad = float(unidad.get("speed_dunit", "0"))
-            lat = float(unidad.get("ylat", 0))
-            lon = float(unidad.get("xlong", 0))
-            unit_id = unidad.get("unitid", unidad.get("name", "N/A")) 
+            
+            # 🚨 1. APLICAR LÓGICA DE FALLA GPS (sobrescribe los datos en caso de falla) 🚨
+            unidad_con_falla_check = verificar_falla_gps(unidad, hora_actual_ve)
+            
+            # Bandera para saber si el estado fue cambiado por Falla GPS
+            es_falla_gps = unidad_con_falla_check.get('Estado_Falla_GPS', False)
+            
+            # Extraer campos necesarios (los raw del API, o los override si Falla GPS es True)
+            ignicion_raw = unidad_con_falla_check.get("ignition", "false").lower()
+            velocidad = float(unidad_con_falla_check.get("speed_dunit", "0"))
+            lat = float(unidad_con_falla_check.get("ylat", 0))
+            lon = float(unidad_con_falla_check.get("xlong", 0))
+            unit_id = unidad_con_falla_check.get("unitid", unidad_con_falla_check.get("name", "N/A")) 
 
             ignicion_estado = ignicion_raw == "true"
             
-            distancia = haversine(lat, lon, LAT_SEDE, LON_SEDE)
-            en_sede = distancia <= PROXIMIDAD_KM
+            falla_gps_motivo = None # Valor por defecto
+            # Obtener el tiempo del último reporte (string original del API)
+            last_report_time_display = unidad_con_falla_check.get('LastReportTime', 'N/A')
             
-            estado_final_display = "Apagada ❄️" 
-            color_fondo = "#D32F2F" 
-            
-            if ignicion_estado:
-                if en_sede:
-                    estado_final_display = "Encendida (Sede) 🔥"; color_fondo = "#B37305"
-                else:
-                    estado_final_display = "Encendida 🔥"; color_fondo = "#4CAF50"
+            if es_falla_gps:
+                # Si es Falla GPS, usamos el estado y el estilo sobrescrito
+                estado_final_display = unidad_con_falla_check['IGNICION_OVERRIDE']
+                card_style = unidad_con_falla_check['CARD_STYLE_OVERRIDE']
+                # 🚨 CAMBIO AÑADIDO: Recuperar el motivo de la falla GPS 🚨
+                falla_gps_motivo = unidad_con_falla_check.get('FALLA_GPS_MOTIVO')
+                # 🚨 NUEVO CAMBIO: Recuperar la hora del reporte para el display, guardada en verificar_falla_gps
+                last_report_time_display = unidad_con_falla_check.get('LAST_REPORT_TIME_FOR_DETAIL', last_report_time_display)
             else:
-                if en_sede:
-                    estado_final_display = "Resguardo (Sede) 🛡️"; color_fondo = "#337ab7"
-            
-            card_style = "background-color: {}; padding: 15px; border-radius: 5px; color: white; margin-bottom: 0px;".format(color_fondo)
+                # --- LÓGICA EXISTENTE DE ESTADO (IGNICIÓN/SEDE/RESGUARDO) ---
+                
+                # --- CÁLCULO DE DISTANCIA A LA SEDE PRINCIPAL ---
+                distancia = haversine(lat, lon, LAT_SEDE, LON_SEDE)
+                en_sede = distancia <= PROXIMIDAD_KM
+                
+                # --- CÁLCULO DE DISTANCIA A LAS UBICACIONES DE RESGUARDO SECUNDARIO ---
+                en_resguardo_secundario = False
+                for resguardo_coords in COORDENADAS_RESGUARDO_SECUNDARIO:
+                    lat_res, lon_res = resguardo_coords
+                    # El umbral de PROXIMIDAD_KM se usa aquí también
+                    distancia_resguardo = haversine(lat, lon, lat_res, lon_res)
+                    if distancia_resguardo <= PROXIMIDAD_KM:
+                        en_resguardo_secundario = True
+                        break
+                # -----------------------------------------------------------------------------------
+                
+                estado_final_display = "Apagada ❄️" 
+                color_fondo = "#D32F2F" 
+                
+                if ignicion_estado:
+                    if en_sede:
+                        estado_final_display = "Encendida (Sede) 🔥"; color_fondo = "#B37305"
+                    else:
+                        estado_final_display = "Encendida 🔥"; color_fondo = "#4CAF50"
+                else:
+                    if en_sede:
+                        estado_final_display = "Resguardo (Sede) 🛡️"; color_fondo = "#337ab7"
+                    # --- CONDICIÓN DE ESTADO ---
+                    elif en_resguardo_secundario:
+                        estado_final_display = "Resguardo (Fuera de Sede) 🛡️"; color_fondo = COLOR_RESGUARDO_SECUNDARIO
+                    # ---------------------------------
+                
+                card_style = "background-color: {}; padding: 15px; border-radius: 5px; color: white; margin-bottom: 0px;".format(color_fondo)
 
             datos_filtrados.append({
-                "UNIDAD": unidad.get("name", "N/A"),
+                "UNIDAD": unidad_con_falla_check.get("name", "N/A"),
                 "UNIT_ID": unit_id, 
-                "IGNICION": estado_final_display,
+                "IGNICION": estado_final_display, # Ya actualizado con Falla GPS si aplica
                 "VELOCIDAD": velocidad,
                 "LATITUD": lat,
                 "LONGITUD": lon,
-                "UBICACION_TEXTO": unidad.get("location", "Dirección no disponible"),
-                "CARD_STYLE": card_style
+                "UBICACION_TEXTO": unidad_con_falla_check.get("location", "Dirección no disponible"),
+                "CARD_STYLE": card_style,
+                # 🚨 CAMBIO AÑADIDO: Incluir el motivo en el DataFrame 🚨
+                "FALLA_GPS_MOTIVO": falla_gps_motivo,
+                # 🚨 NUEVO CAMBIO: Incluir la hora del reporte en el DataFrame
+                "LAST_REPORT_TIME_DISPLAY": last_report_time_display 
             })
         
         return pd.DataFrame(datos_filtrados)
@@ -313,13 +474,56 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any]):
         return get_fallback_data("Error de Conexión/API")
 
 
+# --- FUNCIÓN PARA MOSTRAR LA LEYENDA DE COLORES EN EL SIDEBAR ---
+def display_color_legend():
+    """Muestra la leyenda de colores de las tarjetas de estado de forma compacta (sin título, ya que lo pone el expander)."""
+    
+    # Definiciones de colores y estados de la lógica principal (NOMBRES ACTUALIZADOS)
+    COLOR_MAP = {
+        "#4CAF50": "Encendida en Ruta",             # Verde
+        "#D32F2F": "Apagada",                      # Rojo
+        "#337ab7": "Resguardo (Sede)",             # Azul Oscuro (Resguardo Sede Apagada)
+        COLOR_RESGUARDO_SECUNDARIO: "Resguardo (F. Sede)", # Azul Marino (#191452)
+        "#B37305": "Encendida (Sede)",             # Naranja Oscuro (Encendida Sede)
+        "#FFC107": "Parada Larga",                 # Amarillo (Sobrepasa el umbral de parada)
+        COLOR_FALLA_GPS: "Falla GPS",              # <-- NUEVA LEYENDA
+    }
+
+    # Dividir en dos columnas para mayor compacidad
+    cols_legend = st.columns(2)
+    col_index = 0
+    
+    for color, description in COLOR_MAP.items():
+        with cols_legend[col_index % 2]:
+            legend_html = f"""
+            <div style="display: flex; align-items: center; margin-bottom: 3px;">
+                <div style="width: 14px; height: 14px; background-color: {color}; border-radius: 3px; margin-right: 5px; border: 1px solid #ddd;"></div>
+                <span style="font-size: 0.85em;">{description}</span>
+            </div>
+            """
+            st.markdown(legend_html, unsafe_allow_html=True)
+        col_index += 1
+# -------------------------------------------------------------------------------------
+
+
 # --- INICIALIZACIÓN DEL ESTADO DE SESIÓN ---
 if 'flota_seleccionada' not in st.session_state:
     st.session_state['flota_seleccionada'] = None 
 if 'filtro_sede' not in st.session_state:
     st.session_state['filtro_sede'] = False
-if 'unidades_stop_state' not in st.session_state:
-    st.session_state['unidades_stop_state'] = {}
+
+# 🚨 NUEVA FUNCIÓN COMPARTIDA: Almacena el estado de parada globalmente (Shared State) 🚨
+@st.cache_resource(ttl=None) 
+def get_global_stop_state() -> Dict[str, Any]:
+    """Retorna un diccionario de estado que es único y compartido por todos los usuarios (Global State)."""
+    # Esta función se ejecuta UNA SOLA VEZ en el servidor.
+    return {}
+
+# Inicializar y obtener la referencia al estado global (la inicialización previa en st.session_state fue eliminada)
+get_global_stop_state()
+# ------------------------------------------------------------------------------------
+
+# El resto de variables deben seguir usando st.session_state ya que son locales a cada usuario.
 if 'alertas_descartadas' not in st.session_state:
     st.session_state['alertas_descartadas'] = {}
 if 'alertas_velocidad_descartadas' not in st.session_state:
@@ -328,7 +532,6 @@ if 'reproducir_audio_alerta' not in st.session_state:
     st.session_state['reproducir_audio_alerta'] = False
 if 'reproducir_audio_velocidad' not in st.session_state:
     st.session_state['reproducir_audio_velocidad'] = False
-# NUEVA CLAVE PARA EL HISTORIAL DE LOGS
 if 'log_historial' not in st.session_state:
     st.session_state['log_historial'] = [] 
 
@@ -341,10 +544,9 @@ def actualizar_dashboard():
     pass
 
 with st.sidebar:
-    st.markdown(
-    '<p style="font-size: 30px; font-weight: bold; color: white; margin-bottom: 0px;">Selección de Flota</p>', 
-    unsafe_allow_html=True
-)
+    # 1. SELECCIÓN DE FLOTA (TITLE & SELECTOR)
+    # 🚨 LÍNEA MODIFICADA PARA CENTRAR EL TEXTO 🚨
+    st.markdown('<p style="font-size: 30px; font-weight: bold; color: white; margin-bottom: 0px; text-align: center;">Selección de Flota 🗺️</p>', unsafe_allow_html=True)
     
     flota_keys = ["-- Seleccione una Flota --"] + list(FLOTAS_CONFIG.keys())
     
@@ -359,34 +561,42 @@ with st.sidebar:
         options=flota_keys,
         index=current_index,
         key="flota_selector",
-        on_change=actualizar_dashboard 
+        on_change=actualizar_dashboard,
+        label_visibility="collapsed" # Compactar: Ocultar el label del selectbox
     )
     
     if flota_actual == flota_keys[0]:
         st.session_state['flota_seleccionada'] = None
     else:
         st.session_state['flota_seleccionada'] = flota_actual
-        
-    st.markdown("---")
-    
-    alerta_velocidad_placeholder = st.empty()
-    st.markdown("---")
-    
-    alerta_stop_placeholder = st.empty()
-    
+
+    # 2. FILTRO EN RUTA
     if st.session_state['flota_seleccionada']:
-        st.markdown("---") 
         st.checkbox(
-            "**Unidades en Ruta**", 
+            "**Unidades en Ruta** (Excluir Resguardo)", 
             key="filtro_sede",
             on_change=actualizar_dashboard 
         )
+
+    # 3. LEYENDA DE COLORES (Ubicación fija)
+    # 🚨 CAMBIO: Se envuelve la llamada en un st.expander con expanded=False 🚨
+    with st.expander("##### Leyenda de Estados 🎨", expanded=False):
+        display_color_legend() 
+
+    # 4. Este placeholder contendrá todas las métricas, el debug y la hora.
+    # El contenido de este placeholder se renderizará más abajo, pero la variable debe existir aquí.
+    metricas_placeholder = st.empty() 
     
+    # 5. PLACEHOLDER ALERTA PARADA LARGA
+    alerta_stop_placeholder = st.empty()
     st.markdown("---")
-    st.header("Estadísticas de la Flota")
     
-    metricas_placeholder = st.empty()
-    
+    # 6. PLACEHOLDER ALERTA EXCESO DE VELOCIDAD
+    alerta_velocidad_placeholder = st.empty()
+    st.markdown("---")
+
+    # 7. PLACEHOLDER PARA EL DEBUG Y HORA (AHORA FUERA DEL EXPANDER)
+    debug_status_placeholder = st.empty()
 
 # === BUCLE PRINCIPAL (while True) - Lógica Completa ===
 
@@ -394,8 +604,8 @@ placeholder = st.empty()
 # NUEVO PLACEHOLDER para el Historial de Logs
 log_placeholder = st.empty() 
 
-STOP_THRESHOLD_MINUTES = 10.0
-SPEED_THRESHOLD_KPH = 70
+STOP_THRESHOLD_MINUTES = 0.2
+SPEED_THRESHOLD_KPH = 10
 
 
 while True:
@@ -412,10 +622,12 @@ while True:
             st.markdown("---")
             st.info("👋 Por favor, **seleccione una Flota** en el panel lateral (Sidebar) para comenzar el monitoreo en tiempo real.")
             
+        # Limpiar Placeholders
         with alerta_velocidad_placeholder.container(): st.empty()
         with alerta_stop_placeholder.container(): st.empty()
         with metricas_placeholder.container(): st.empty()
-        with log_placeholder.container(): st.empty() # Limpiar el log
+        with debug_status_placeholder.container(): st.empty() # Limpiar el nuevo placeholder de debug
+        with log_placeholder.container(): st.empty() 
             
         time.sleep(1) 
         continue 
@@ -429,7 +641,8 @@ while True:
     
     # -- LÓGICA DE DETECCIÓN DE PARADAS LARGAS Y EXCESO DE VELOCIDAD --
 
-    current_stop_state = st.session_state['unidades_stop_state']
+    # 🚨 CAMBIO CRUCIAL: Se accede a la referencia ÚNICA y GLOBAL del estado.
+    current_stop_state = get_global_stop_state() 
     # Se usa la zona horaria para un manejo consistente, aunque no se muestre
     now = pd.Timestamp.now(tz='America/Caracas') 
     
@@ -454,7 +667,8 @@ while True:
 
             last_state = current_stop_state[unit_id_api]
             is_moving = velocidad > 1.0 
-            is_out_of_hq = not ("(Sede)" in row['IGNICION'] or "Resguardo" in row['IGNICION'])
+            # is_out_of_hq ahora también excluye el nuevo estado "Resguardo (Fuera de Sede)" Y "Falla GPS"
+            is_out_of_hq = not ("(Sede)" in row['IGNICION'] or "Resguardo" in row['IGNICION'] or "Falla GPS" in row['IGNICION'])
             is_speeding = velocidad >= SPEED_THRESHOLD_KPH
 
             # --- LÓGICA DE EXCESO DE VELOCIDAD (START/UPDATE) ---
@@ -539,26 +753,29 @@ while True:
                 if stop_duration_minutes > STOP_THRESHOLD_MINUTES and is_out_of_hq:
                     last_state['alerted_stop_minutes'] = stop_duration_minutes
                 
-            st.session_state['unidades_stop_state'][unit_id_api] = last_state
+            # 🚨 CORRECCIÓN CRUCIAL: SE ELIMINA LA LÍNEA QUE CAUSABA EL KeyError 
+            # (Ya no se necesita escribir en st.session_state porque current_stop_state es una referencia global)
+            # st.session_state['unidades_stop_state'][unit_id_api] = last_state 
     
     # Lógica de Filtrado Condicional
     df_data_mostrada = df_data_original
     filtro_descripcion = "Todas las Unidades"
 
     if not is_fallback and st.session_state.get("filtro_sede", False):
-        is_en_ruta = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo")
+        # Excluimos Resguardo, Encendida (Sede), Resguardo (Fuera de Sede) Y Falla GPS
+        is_en_ruta = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS")
         df_data_mostrada = df_data_original[is_en_ruta].reset_index(drop=True)
         filtro_descripcion = "Unidades Fuera de Sede 🛣️"
     
     # Lógica de Detección y Construcción de Alerta de Parada Larga (Alertas Visibles)
-    # ... (Se mantiene la misma lógica para las tarjetas de alerta visible en el sidebar) ...
     unidades_en_alerta_stop = pd.DataFrame()
     mensaje_alerta_stop = ""
 
     if not is_fallback:
+        # Se excluyen Resguardo, Sede Y Falla GPS
         todas_las_alertas_stop = df_data_original[
             (df_data_original['STOP_DURATION_MINUTES'] > STOP_THRESHOLD_MINUTES) &
-            (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo"))
+            (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS"))
         ].copy()
 
         unidades_pendientes_stop = [
@@ -591,9 +808,10 @@ while True:
     mensaje_alerta_speed = ""
 
     if not is_fallback:
+        # Se excluyen Resguardo, Sede Y Falla GPS
         todas_las_alertas_speed = df_data_original[
             (df_data_original['VELOCIDAD'] >= SPEED_THRESHOLD_KPH) &
-            (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo"))
+            (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS"))
         ].copy()
 
         unidades_pendientes_speed = [
@@ -620,52 +838,65 @@ while True:
                 estado_critico = "🚨 CRÍTICO" if row['VELOCIDAD'] > 74.0 else "⚠️ ALERTA"
                 mensaje_alerta_speed += (f"**{nombre_unidad}** ({estado_critico} a {velocidad_formateada}):\n---\n")
     
-    # --- Actualización de Métricas del Sidebar ---
-    with metricas_placeholder.container():
-        current_time = now.strftime('%H:%M:%S')
-        if not is_fallback:
-            total_unidades_flota = len(df_data_original) 
-            unidades_encendidas = df_data_original[df_data_original["IGNICION"].str.contains("Encendida")].shape[0]
-            unidades_resguardo = df_data_original[df_data_original["IGNICION"].str.contains("Resguardo")].shape[0]
-            unidades_apagadas = total_unidades_flota - unidades_encendidas - unidades_resguardo
-            
-            st.metric("Total Unidades", total_unidades_flota) 
-            st.metric("Encendidas 🔥", unidades_encendidas)
-            st.metric("Apagadas ❄️", unidades_apagadas)
-            st.metric("Resguardo 🛡️", unidades_resguardo) 
-            
-            st.markdown("---")
-            st.info(f"Última Actualización: **{current_time}**") 
-            st.markdown("---")
-            st.header("DEBUG API STATUS")
-            
-            st.success(f"Conexión **OK**. Se recibieron {total_unidades_flota} registros.") 
-            if st.session_state.get("filtro_sede", False):
-                st.info(f"Filtro Activo: **{filtro_descripcion}**. Mostrando **{len(df_data_mostrada)}** unidades.")
-        else:
-            causa = df_data_original['UBICACION_TEXTO'].iloc[0].split(' - ')[1]
-            st.metric("Total Unidades", "Error")
-            st.error(f"❌ API Falló: {causa}")
-            st.markdown("---")
-            st.info(f"Última Actualización: **{current_time}**") 
-            
-    
-    # 4. RENDERIZADO DEL TEXT BOX DE ALERTA (EXCESO VELOCIDAD)
+    # --- 1. RENDERIZADO DEL TEXT BOX DE ALERTA (PARADA LARGA) ---
     unique_time_id = int(time.time() * 1000) 
     
+    with alerta_stop_placeholder.container():
+        if not unidades_en_alerta_stop.empty:
+            total_alertas_pendientes = len(unidades_en_alerta_stop)
+            st.markdown(f"#### 🚨 Alerta de Parada Larga ({total_alertas_pendientes})")
+            st.markdown("---")
+            
+            if st.session_state.get('reproducir_audio_alerta'):
+                 reproducir_alerta_sonido(AUDIO_BASE64_PARADA)
+                 
+            st.warning(mensaje_alerta_stop) 
+            
+            st.markdown("##### Descartar Paradas:")
+            cols_btn = st.columns(3) 
+            
+            for index, row in unidades_en_alerta_stop.iterrows():
+                unidad_id = row['UNIDAD']
+                nombre_display = unidad_id.split('-')[0]
+                col_index = index % 3
+                
+                with cols_btn[col_index]:
+                    st.button(
+                        f"Aceptar: {nombre_display}", 
+                        key=f"descartar_stop_{unidad_id}_{unique_time_id}", 
+                        on_click=descartar_alerta_stop,
+                        args=(unidad_id,),
+                        type="primary"
+                    )
+                    
+            def aceptar_todas_paradas():
+                for uid in unidades_en_alerta_stop['UNIDAD']:
+                    st.session_state['alertas_descartadas'][uid] = True
+                st.session_state['reproducir_audio_alerta'] = False
+                    
+            st.button(
+                "Aceptar TODAS las Paradas",
+                key=f"descartar_all_stops_{unique_time_id}",
+                on_click=aceptar_todas_paradas,
+                type="secondary"
+            )
+        else:
+            st.session_state['reproducir_audio_alerta'] = False
+            alerta_stop_placeholder.empty()
+
+    # --- 2. RENDERIZADO DEL TEXT BOX DE ALERTA (EXCESO VELOCIDAD) ---
     with alerta_velocidad_placeholder.container():
         if not unidades_en_alerta_speed.empty:
             total_alertas_pendientes_speed = len(unidades_en_alerta_speed)
             st.markdown(f"#### ⚠️ Exceso de Velocidad ({total_alertas_pendientes_speed})")
             st.markdown("---")
             
-            # 🚨 REPRODUCCIÓN DE AUDIO VELOCIDAD 🚨
             if st.session_state.get('reproducir_audio_velocidad'):
                  reproducir_alerta_sonido(AUDIO_BASE64_VELOCIDAD)
             
             st.error(mensaje_alerta_speed) 
             
-            st.markdown("##### Aceptar y Descartar Mensaje (Velocidad):")
+            st.markdown("##### Descartar Excesos:")
             cols_btn_speed = st.columns(3) 
             
             for index, row in unidades_en_alerta_speed.iterrows():
@@ -682,87 +913,153 @@ while True:
                         type="primary"
                     )
             
-            st.markdown("---")
-            
-            if total_alertas_pendientes_speed > 0:
-                # CORRECCIÓN BOTÓN ACEPTAR TODAS: Definición para apagar el audio de velocidad
-                def aceptar_todas_velocidades():
-                    for uid in unidades_en_alerta_speed['UNIDAD']:
-                        st.session_state['alertas_velocidad_descartadas'][uid] = True
-                    st.session_state['reproducir_audio_velocidad'] = False
+            def aceptar_todas_velocidades():
+                for uid in unidades_en_alerta_speed['UNIDAD']:
+                    st.session_state['alertas_velocidad_descartadas'][uid] = True
+                st.session_state['reproducir_audio_velocidad'] = False
                     
-                st.button(
-                    "Aceptar TODAS las Alertas de Velocidad",
-                    key=f"descartar_all_speed_{unique_time_id}",
-                    on_click=aceptar_todas_velocidades,
-                    type="secondary"
-                )
+            st.button(
+                "Aceptar TODAS las Alertas de Velocidad",
+                key=f"descartar_all_speed_{unique_time_id}",
+                on_click=aceptar_todas_velocidades,
+                type="secondary"
+            )
         else:
-            # Si no hay alertas, nos aseguramos de que el flag esté desactivado
             st.session_state['reproducir_audio_velocidad'] = False
             alerta_velocidad_placeholder.empty()
-
-    # 5. RENDERIZADO DEL TEXT BOX DE ALERTA (PARADA LARGA)
-    
-    with alerta_stop_placeholder.container():
-        if not unidades_en_alerta_stop.empty:
-            total_alertas_pendientes = len(unidades_en_alerta_stop)
-            st.markdown(f"#### 🚨 Alerta de Parada Larga ({total_alertas_pendientes})")
-            st.markdown("---")
             
-            # 🚨 REPRODUCCIÓN DE AUDIO PARADA 🚨
-            if st.session_state.get('reproducir_audio_alerta'):
-                 reproducir_alerta_sonido(AUDIO_BASE64_PARADA)
-                 
-            # ------------------------------------------
-
-            st.warning(mensaje_alerta_stop) 
+    # --- 3. Actualización de Métricas del Sidebar (FINAL: Títulos sin valor) ---
+    with metricas_placeholder.container():
+        
+        # --- Función para generar la línea de métrica con estilo ---
+        def format_metric_line(label, value=None, value_size="1.5rem", is_header=False, is_section_title=False, detail_html=""):
+            """Genera el HTML para las métricas con estilo unificado: Etiqueta a la izquierda, Valor a la derecha."""
             
-            st.markdown("##### Aceptar y Descartar Mensaje (Parada):")
-            cols_btn = st.columns(3) 
+            text_style = "color: white; font-family: 'Consolas', 'Courier New', monospace; font-size: 1rem;"
             
-            for index, row in unidades_en_alerta_stop.iterrows():
-                unidad_id = row['UNIDAD']
-                nombre_display = unidad_id.split('-')[0]
-                col_index = index % 3
+            # 1. Título PRINCIPAL (Estadística de la Flota)
+            if is_header:
+                label_html = f'<p style="font-size: 1.2rem; font-weight: bold; margin-bottom: 0px;">{label}</p>'
+                return f'<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;">{label_html}</div>'
                 
-                with cols_btn[col_index]:
-                    # El botón llama al callback que DESACTIVA el audio y marca la alarma como descartada
-                    st.button(
-                        f"Aceptar: {nombre_display}", 
-                        key=f"descartar_stop_{unidad_id}_{unique_time_id}", 
-                        on_click=descartar_alerta_stop,
-                        args=(unidad_id,),
-                        type="primary"
-                    )
-                    
-            st.markdown("---")
-            
-            if total_alertas_pendientes > 0:
-                # CORRECCIÓN BOTÓN ACEPTAR TODAS: Definición para apagar el audio de parada larga
-                def aceptar_todas_paradas():
-                    for uid in unidades_en_alerta_stop['UNIDAD']:
-                        st.session_state['alertas_descartadas'][uid] = True
-                    st.session_state['reproducir_audio_alerta'] = False
-                        
-                st.button(
-                    "Aceptar TODAS las Alertas de Parada",
-                    key=f"descartar_all_stops_{unique_time_id}",
-                    on_click=aceptar_todas_paradas,
-                    type="secondary"
-                )
-        else:
-            # Si no hay alertas pendientes, nos aseguramos de que el flag esté desactivado
-            st.session_state['reproducir_audio_alerta'] = False
-            alerta_stop_placeholder.empty()
+            # 2. Título de SECCIÓN (Estado Operacional, Resguardo) - SOLO TEXTO SIN VALOR
+            if is_section_title:
+                return f'<p style="font-size: 1.1rem; font-weight: bold; margin-bottom: 5px; color: white;">{label}</p>'
 
-    
-    # RENDERIZADO DEL LOG DE EVENTOS (SECCIÓN DE LA NUEVA FUNCIONALIDAD)
+            # 3. Métrica Normal (Etiqueta: Valor)
+            value_html = f'<span style="font-size: {value_size}; font-weight: bold; color: white;">{value}</span>'
+            
+            # Contenedor de la métrica
+            html_content = f"""
+            <p style="{text_style} display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <span style="white-space: nowrap;">{label}:</span>
+                <span style="display: flex; align-items: baseline;">{value_html} {detail_html}</span>
+            </p>
+            """
+            return html_content
+
+        # --- INICIO DEL RENDERIZADO (SIMULANDO IMAGEN 2) ---
+        if not is_fallback:
+            # 🚨 CAMBIO: Se envuelve el bloque de estadísticas en un st.expander con expanded=False 🚨
+            with st.expander("📊 Estadística de Flota", expanded=False):
+            
+                # Lógica de cálculo (MISMA LÓGICA DE TU CÓDIGO)
+                total_unidades_flota = len(df_data_original) 
+                
+                # Se excluye Falla GPS del conteo de Resguardo y En Ruta para mayor precisión operativa
+                df_operando = df_data_original[~df_data_original["IGNICION"].str.contains("Falla GPS")].copy()
+                
+                unidades_resguardo_total = df_operando[df_operando["IGNICION"].str.contains(
+                    "Resguardo \(Sede\)|Encendida \(Sede\)|Resguardo \(Fuera de Sede\)"
+                )].shape[0]
+                unidades_en_ruta = df_operando.shape[0] - unidades_resguardo_total
+                
+                unidades_falla_gps = df_data_original[df_data_original["IGNICION"].str.contains("Falla GPS")].shape[0]
+                
+                unidades_encendidas_ruta = df_operando[
+                    df_operando["IGNICION"].str.contains("Encendida 🔥")
+                ].shape[0]
+                unidades_apagadas_ruta = df_operando[
+                    df_operando["IGNICION"].str.contains("Apagada ❄️")
+                ].shape[0]
+                unidades_resguardo_sede_apagada = df_operando[df_operando["IGNICION"].str.contains("Resguardo \(Sede\)")].shape[0]
+                unidades_resguardo_sede_encendida = df_operando[df_operando["IGNICION"].str.contains("Encendida \(Sede\)")].shape[0]
+                unidades_resguardo_fuera = df_operando[df_operando["IGNICION"].str.contains("Resguardo \(Fuera de Sede\)")].shape[0]
+                
+                total_resguardo_sede = unidades_resguardo_sede_apagada + unidades_resguardo_sede_encendida
+
+                
+                # --- RENDERIZADO CON HTML COMPACTO ---
+                
+                # 1. TÍTULO PRINCIPAL: Estadística de la Flota
+                st.markdown(format_metric_line("Estadística de la Flota 🚚", is_header=True), unsafe_allow_html=True)
+                
+                # Total Unidades de Flota
+                st.markdown(format_metric_line("Total Unidades Flota", total_unidades_flota, value_size="2.0rem"), unsafe_allow_html=True)
+                st.markdown(format_metric_line("Unidades Falla GPS", unidades_falla_gps), unsafe_allow_html=True) # NUEVA MÉTRICA
+                st.markdown('<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;"></div>', unsafe_allow_html=True)
+                
+                # 2. ESTADO OPERACIONAL (TÍTULO DE SECCIÓN SIN VALOR)
+                st.markdown(format_metric_line("Estado Operacional 🔥", is_section_title=True), unsafe_allow_html=True)
+                
+                # Detalle de Encendidas en Ruta
+                delta_encendidas_ruta = f'<span style="color: #4CAF50; font-size: 0.9em; font-weight: bold; margin-left: 10px; white-space: nowrap;">↑ {unidades_encendidas_ruta} Encendidas</span>'
+
+                # Unidades en Ruta
+                st.markdown(
+                    format_metric_line("Unidades en Ruta", unidades_en_ruta, 
+                                    detail_html=delta_encendidas_ruta), 
+                    unsafe_allow_html=True
+                )
+                # Unidades Apagadas en Ruta
+                st.markdown(format_metric_line("Unidades Apagadas (Ruta)", unidades_apagadas_ruta), unsafe_allow_html=True)
+
+                st.markdown('<div style="border-bottom: 1px solid #444444; margin: 10px 0 10px 0;"></div>', unsafe_allow_html=True)
+                
+                # 3. RESGUARDO (TÍTULO DE SECCIÓN SIN VALOR)
+                st.markdown(format_metric_line("Resguardo 🛡️", is_section_title=True), unsafe_allow_html=True)
+                
+                # Total Resguardo Sede (Unidades en HQ, Encendidas o Apagadas)
+                st.markdown(format_metric_line("Total Resguardo Sede", total_resguardo_sede), unsafe_allow_html=True)
+                
+                # Detalle Resguardo Sede
+                st.markdown(
+                    f'<p style="font-family: monospace; font-size: 0.9rem; color: #aaaaaa; margin-top: -5px; margin-bottom: 5px;">'
+                    f'Detalle: {unidades_resguardo_sede_encendida} Encendidas / {unidades_resguardo_sede_apagada} Apagadas.'
+                    f'</p>', 
+                    unsafe_allow_html=True
+                )
+                
+                # Total Resguardo Fuera de Sede
+                st.markdown(format_metric_line("Total Resguardo Fuera Sede", unidades_resguardo_fuera), unsafe_allow_html=True)
+                
+            st.markdown("---") 
+            
+            # --- RENDERIZADO DEL DEBUG Y HORA (FUERA DEL EXPANDER) ---
+            with debug_status_placeholder.container():
+                current_time = now.strftime('%H:%M:%S')
+                st.info(f"Última Actualización: **{current_time}**") 
+                st.markdown("---")
+                st.header("DEBUG API STATUS")
+                
+                st.success(f"Conexión **OK**. Se recibieron {total_unidades_flota} registros.") 
+                if st.session_state.get("filtro_sede", False):
+                    st.info(f"Filtro Activo: **{filtro_descripcion}**. Mostrando **{len(df_data_mostrada)}** unidades.")
+                
+        else:
+            # (Lógica de Fallback sin cambios, pero movida al nuevo placeholder)
+            with debug_status_placeholder.container():
+                causa = df_data_original['UBICACION_TEXTO'].iloc[0].split(' - ')[1]
+                st.metric("Total Unidades", "Error")
+                st.error(f"❌ API Falló: {causa}")
+                st.markdown("---")
+                st.info(f"Última Actualización: **{now.strftime('%H:%M:%S')}**") 
+
+    # RENDERIZADO DEL LOG DE EVENTOS
     with log_placeholder.container():
         if st.session_state['log_historial']:
             st.markdown("---")
-            st.markdown("#### 📜 Historial de Eventos (Parada y Velocidad)")
-            # Mostrar solo los últimos 10 logs
+            st.markdown("#### 📜 Historial de Eventos")
             for log_entry in st.session_state['log_historial'][:10]:
                 st.info(log_entry)
             st.markdown("---")
@@ -809,22 +1106,31 @@ while True:
                         estado_display = estado_ignicion 
                         color_velocidad = "white"
                         
-                        is_out_of_hq_status = not ("(Sede)" in estado_ignicion or "Resguardo" in estado_ignicion)
+                        # Definimos si está en ruta (excluye Resguardo, Sede Y Falla GPS)
+                        is_out_of_hq_status = not ("(Sede)" in estado_ignicion or "Resguardo" in estado_ignicion or "Falla GPS" in estado_ignicion)
                         
-                        # Resaltado visual para Parada Larga
-                        if stop_duration > STOP_THRESHOLD_MINUTES and velocidad_float < 1.0 and is_out_of_hq_status:
-                            parada_display = f"Parada Larga 🛑: {stop_duration:.0f} min"
-                            card_style = "background-color: #FFC107; padding: 15px; border-radius: 5px; color: black; margin-bottom: 0px;" 
-                            estado_display = parada_display 
-                            color_velocidad = "black"
+                        # Lógica de Precedencia: Falla GPS > Parada Larga > Exceso de Velocidad
+                        
+                        if "Falla GPS" in estado_ignicion:
+                            # Falla GPS ya trae su estilo y display (gris, texto negro en card)
+                            color_velocidad = "black" 
                             
-                        # Resaltado visual para Exceso de Velocidad (Texto Rojo)
-                        elif velocidad_float > 74.0:
-                            color_velocidad = "#D32F2F" # ROJO (Crítico)
-                            estado_display = "EXCESO VELOCIDAD 🚨"
-                        elif velocidad_float >= SPEED_THRESHOLD_KPH:
-                            color_velocidad = "#FF9800" # NARANJA (Alerta)
-                            estado_display = "Alerta Velocidad ⚠️" 
+                        # Si NO es Falla GPS, verificamos otras alertas:
+                        else:
+                            # Resaltado visual para Parada Larga (Solo si no es Falla GPS)
+                            if stop_duration > STOP_THRESHOLD_MINUTES and velocidad_float < 1.0 and is_out_of_hq_status:
+                                parada_display = f"Parada Larga 🛑: {stop_duration:.0f} min"
+                                card_style = "background-color: #FFC107; padding: 15px; border-radius: 5px; color: black; margin-bottom: 0px;" 
+                                estado_display = parada_display 
+                                color_velocidad = "black"
+                                
+                            # Resaltado visual para Exceso de Velocidad (Solo si no es Falla GPS ni Parada Larga)
+                            elif velocidad_float > 74.0:
+                                color_velocidad = "#D32F2F" # ROJO (Crítico)
+                                estado_display = "EXCESO VELOCIDAD 🚨"
+                            elif velocidad_float >= SPEED_THRESHOLD_KPH:
+                                color_velocidad = "#FF9800" # NARANJA (Alerta)
+                                estado_display = "Alerta Velocidad ⚠️" 
 
                         # Estructura del card HTML
                         st.markdown(f'<div style="{card_style}">', unsafe_allow_html=True)
@@ -849,10 +1155,28 @@ while True:
                         with st.expander("Detalles ℹ️"):
                             stop_timedelta_card = row['STOP_DURATION_TIMEDELTA']
                             tiempo_parado_display = f"{int(stop_timedelta_card.total_seconds() // 60)} min {int(stop_timedelta_card.total_seconds() % 60):02} seg"
-
+                            
                             st.caption(f"Tiempo Parado: **{tiempo_parado_display}**") 
+                            
+                            # 🚨 CAMBIO AÑADIDO: Muestra el motivo específico de la Falla GPS y el último reporte 🚨
+                            falla_motivo = row.get('FALLA_GPS_MOTIVO')
+                            last_report_display = row.get('LAST_REPORT_TIME_DISPLAY') # Recuperar la hora/fecha del reporte
+                            
+                            if falla_motivo:
+                                # Usamos st.error para que se destaque bien en el expander
+                                st.error(
+                                    f"🚫 **Motivo Falla GPS:** {falla_motivo}\n\n"
+                                    f"🕒 **Último Reporte:** {last_report_display}"
+                                )
+                            # -------------------------------------------------------------
+                            
                             st.caption(f"Estado GPS: **{estado_ignicion}**")
                             st.caption(f"Dirección: **{row['UBICACION_TEXTO']}**")
+                            
+                            # Muestra el último reporte como caption si NO es una falla GPS, para información general
+                            if not falla_motivo:
+                                st.caption(f"Último Reporte: **{last_report_display}**")
+                                
                             st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})")
                         
                 st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)

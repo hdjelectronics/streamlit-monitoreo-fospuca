@@ -20,18 +20,25 @@ VENEZUELA_TZ = timezone(timedelta(hours=-4))
 TIME_FORMAT = '%b %d %Y %I:%M%p'
 COLOR_FALLA_GPS = "#AAAAAA" # Gris para Falla GPS
 
+# --- 🔒 CONSTANTE DE CONTRASEÑA 🔒 ---
+CONFIG_PASSWORD = "admin" # <-- ¡CÁMBIALA AQUÍ!
+# -------------------------------------
+
 def obtener_hora_venezuela() -> datetime:
     """Retorna el objeto datetime con la hora actual en la Zona Horaria de Venezuela (VET)."""
     # Se crea un objeto aware (consciente) de la zona horaria.
     return datetime.now(VENEZUELA_TZ)
 
-def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -> Dict[str, Any]:
+# 🚨 FUNCIÓN MODIFICADA PARA USAR PARÁMETROS DINÁMICOS 🚨
+def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime, 
+                        minutos_encendida: int, minutos_apagada: int) -> Dict[str, Any]:
     """
-    Evalúa si la unidad debe cambiar a estado 'Falla GPS' y actualiza el diccionario de datos,
-    incluyendo el motivo específico de la falla y la hora del último reporte.
+    Evalúa si la unidad debe cambiar a estado 'Falla GPS' y actualiza el diccionario de datos.
     
     :param unidad_data: Diccionario de datos de la unidad (debe contener 'LastReportTime' y 'ignition').
     :param hora_venezuela: Objeto datetime con la hora actual de Venezuela.
+    :param minutos_encendida: Umbral de minutos sin reportar con ignición en True.
+    :param minutos_apagada: Umbral de minutos sin reportar con ignición en False.
     :return: Diccionario de la unidad con el estado 'Falla GPS' y estilo actualizado si aplica.
     """
     last_report_str = unidad_data.get('LastReportTime')
@@ -51,24 +58,23 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
     # 2. Calcular la diferencia de tiempo
     diferencia_tiempo: timedelta = hora_venezuela - last_report_dt
     
-    # 3. Definir los umbrales de tiempo
-    UMBRAL_ENCENDIDA = timedelta(minutes=5)
-    # 🚨 MODIFICACIÓN DE UMBRAL (1 hora y 10 minutos)
-    UMBRAL_APAGADA = timedelta(hours=1, minutes=10)
+    # 3. Definir los umbrales de tiempo basados en los parámetros
+    UMBRAL_ENCENDIDA = timedelta(minutes=minutos_encendida)
+    UMBRAL_APAGADA = timedelta(minutes=minutos_apagada)
     
     # 4. Aplicar la lógica de Falla GPS
     es_falla_gps = False
     motivo_falla = ""
     
     if estado_ignicion: # Unidad Encendida (Ignition = True)
-        # Condición: Encendida Y diferencia > 5 minutos
+        # Condición: Encendida Y diferencia > Umbral Encendida
         if diferencia_tiempo > UMBRAL_ENCENDIDA:
             es_falla_gps = True
             # Calcular minutos sin reportar
             minutos_sin_reportar = diferencia_tiempo.total_seconds() / 60.0
-            motivo_falla = f"Encendida **{minutos_sin_reportar:.0f} minutos** sin reportar (Umbral 5 min)."
+            motivo_falla = f"Encendida **{minutos_sin_reportar:.0f} minutos** sin reportar (Umbral {minutos_encendida} min)."
     else: # Unidad Apagada (Ignition = False)
-        # Condición: Apagada Y diferencia > 1 hora y 10 minutos
+        # Condición: Apagada Y diferencia > Umbral Apagada
         if diferencia_tiempo > UMBRAL_APAGADA:
             es_falla_gps = True
             # Calcular horas/minutos sin reportar para el motivo
@@ -79,19 +85,21 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
             tiempo_display = ""
             if horas > 0:
                 tiempo_display += f"{horas} hora(s)"
-            if minutos > 0 or (horas == 0 and minutos == 0): # Asegurar que se muestre algo si es justo el umbral
+            if minutos > 0 or (horas == 0 and minutos == 0): 
                 tiempo_display += f" y {minutos} minuto(s)" if horas > 0 else f"{minutos} minuto(s)"
 
-            motivo_falla = f"Apagada **{tiempo_display.strip()}** sin reportar (Umbral 1h 10min)."
+            # Convertir el umbral de minutos a H:MM para el display
+            umbral_horas = minutos_apagada // 60
+            umbral_minutos = minutos_apagada % 60
+            umbral_display = f"{umbral_horas}h {umbral_minutos}min" if umbral_horas > 0 else f"{umbral_minutos}min"
+
+            motivo_falla = f"Apagada **{tiempo_display.strip()}** sin reportar (Umbral {umbral_display})."
             
     # 5. Aplicar el estado y estilo si es Falla GPS
     if es_falla_gps:
-        unidad_data['Estado_Falla_GPS'] = True # Bandera para fácil referencia
-        # 🚨 CAMBIO AÑADIDO: Guardar el motivo de la falla GPS 🚨
+        unidad_data['Estado_Falla_GPS'] = True 
         unidad_data['FALLA_GPS_MOTIVO'] = motivo_falla 
-        # 🚨 NUEVO CAMBIO AÑADIDO: Guardar el último tiempo de reporte (string original)
         unidad_data['LAST_REPORT_TIME_FOR_DETAIL'] = last_report_str 
-        # Sobrescribimos el estado en el diccionario antes de que sea procesado por la lógica de sede/resguardo
         unidad_data['IGNICION_OVERRIDE'] = "Falla GPS 🚫"
         unidad_data['CARD_STYLE_OVERRIDE'] = f"background-color: {COLOR_FALLA_GPS}; padding: 15px; border-radius: 5px; color: black; margin-bottom: 0px;"
 
@@ -104,7 +112,7 @@ def obtener_audio_base64(audio_path):
     """Codifica el archivo de audio en una cadena Base64 al inicio."""
     # Nota: Asegúrate de que los archivos de audio existan.
     if not os.path.exists(audio_path):
-        st.error(f"Error Crítico: No se encontró el archivo de audio '{audio_path}'.")
+        #st.error(f"Error Crítico: No se encontró el archivo de audio '{audio_path}'.")
         return None
     try:
         with open(audio_path, "rb") as f:
@@ -116,8 +124,6 @@ def obtener_audio_base64(audio_path):
 
 # 🚨 EJECUCIÓN DEL BASE64 UNA SOLA VEZ AL INICIO 🚨
 # **Asegúrate de cambiar los nombres de los archivos si es necesario.**
-# Nota: Si no tienes los archivos 'parada.mp3' y 'velocidad.mp3', esta parte fallará.
-# Si no usas audio, puedes comentar estas dos líneas.
 # AUDIO_BASE64_PARADA = obtener_audio_base64("parada.mp3") 
 # AUDIO_BASE64_VELOCIDAD = obtener_audio_base64("velocidad.mp3") 
 AUDIO_BASE64_PARADA = None # Placeholder si no se usa audio
@@ -239,11 +245,9 @@ FLOTAS_CONFIG = {
     
 }
 # --- DISTANCIA DE LA SEDE (PARA ASUMIR EN SEDE) (100MTS fijos) ---
-# 🚨 VALOR MODIFICADO: 0.1 KM (100 metros) 🚨
 PROXIMIDAD_KM = 0.1
 
 # --- 🚨 NUEVOS RESGUARDOS FUERA DE SEDE (ACTUALIZADO) 🚨 ---
-# 🚨 COLOR REEMPLAZADO POR EL CÓDIGO (191452) 🚨
 COLOR_RESGUARDO_SECUNDARIO = "#191452" 
 
 # Lista de coordenadas de resguardo secundario [Latitud, Longitud]
@@ -352,8 +356,9 @@ def get_fallback_data(error_type="Conexión Fallida"):
     }])
 
 # --- FUNCIÓN DE OBTENCIÓN Y FILTRADO DE DATOS DINÁMICA (TTL de 5 segundos) ---
+# Se usan los argumentos gps_min_encendida y gps_min_apagada para que la función sepa cuándo refrescar el caché.
 @st.cache_data(ttl=5)
-def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any]):
+def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_encendida: int, gps_min_apagada: int):
     """Obtiene y limpia los datos de la API, aplicando la lógica de color por estado/sede, incluyendo Falla GPS."""
     
     flota_data = config.get(nombre_flota, config["Maneiro"])
@@ -393,8 +398,8 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any]):
         datos_filtrados = []
         for unidad in lista_unidades:
             
-            # 🚨 1. APLICAR LÓGICA DE FALLA GPS (sobrescribe los datos en caso de falla) 🚨
-            unidad_con_falla_check = verificar_falla_gps(unidad, hora_actual_ve)
+            # 🚨 1. APLICAR LÓGICA DE FALLA GPS CON PARÁMETROS DINÁMICOS 🚨
+            unidad_con_falla_check = verificar_falla_gps(unidad, hora_actual_ve, gps_min_encendida, gps_min_apagada)
             
             # Bandera para saber si el estado fue cambiado por Falla GPS
             es_falla_gps = unidad_con_falla_check.get('Estado_Falla_GPS', False)
@@ -510,12 +515,58 @@ def display_color_legend():
         col_index += 1
 # -------------------------------------------------------------------------------------
 
+# --- CALLBACKS DE AUTENTICACIÓN Y GUARDADO ---
+
+def check_password(password_key="config_password_input"):
+    """
+    Callback para verificar la contraseña e iniciar la sesión de configuración.
+    
+    🚨 CORRECCIÓN: Se eliminó st.rerun() para que el callback funcione correctamente.
+    """
+    # 🚨 LÍNEA CORREGIDA 🚨
+    if st.session_state.get(password_key) == CONFIG_PASSWORD:
+        st.session_state['authenticated'] = True
+        # Limpiar el campo de contraseña
+        st.session_state[password_key] = "" 
+    else:
+        st.session_state['authenticated'] = False
+        # No se llama a st.rerun()
+# -------------------------------------------------
+
+def save_dynamic_config():
+    """Guarda los valores actuales de los inputs del sidebar en el estado de sesión persistente."""
+    # Los valores de los inputs se almacenan en st.session_state con sus keys temporales
+    st.session_state['config_params']['TIME_SLEEP'] = st.session_state['input_time_sleep_temp']
+    st.session_state['config_params']['STOP_THRESHOLD_MINUTES'] = st.session_state['input_stop_threshold_temp']
+    st.session_state['config_params']['SPEED_THRESHOLD_KPH'] = st.session_state['input_speed_threshold_temp']
+    st.session_state['config_params']['GPS_MIN_ENCENDIDA'] = st.session_state['input_gps_min_on_temp']
+    st.session_state['config_params']['GPS_MIN_APAGADA'] = st.session_state['input_gps_min_off_temp']
+    
+    # Limpiar la caché para que la próxima llamada a la API use los nuevos parámetros
+    st.cache_data.clear()
+    
+    st.toast("✅ Configuración guardada y aplicada!", icon='💾')
+# -------------------------------------------------
+
 
 # --- INICIALIZACIÓN DEL ESTADO DE SESIÓN ---
 if 'flota_seleccionada' not in st.session_state:
     st.session_state['flota_seleccionada'] = None 
-if 'filtro_sede' not in st.session_state:
-    st.session_state['filtro_sede'] = False
+if 'filtro_en_ruta' not in st.session_state: # Renombrado
+    st.session_state['filtro_en_ruta'] = False
+if 'filtro_estado_especifico' not in st.session_state: # NUEVO
+    st.session_state['filtro_estado_especifico'] = "Mostrar Todos"
+if 'authenticated' not in st.session_state:
+    st.session_state['authenticated'] = False
+if 'config_params' not in st.session_state:
+    # Parámetros por defecto activos
+    st.session_state['config_params'] = {
+        'STOP_THRESHOLD_MINUTES': 10,
+        'SPEED_THRESHOLD_KPH': 70,
+        'GPS_MIN_ENCENDIDA': 5,
+        'GPS_MIN_APAGADA': 70,
+        'TIME_SLEEP': 3
+    }
 
 # 🚨 NUEVA FUNCIÓN COMPARTIDA: Almacena el estado de parada globalmente (Shared State) 🚨
 @st.cache_resource(ttl=None) 
@@ -545,7 +596,8 @@ if 'log_historial' not in st.session_state:
 
 def actualizar_dashboard():
     """Función de callback para re-ejecutar el script al cambiar el filtro o flota."""
-    st.cache_data.clear()
+    # Limpia el caché de datos solo al cambiar la flota, no al mover un slider temporal.
+    st.cache_data.clear() 
     pass
 
 with st.sidebar:
@@ -575,21 +627,157 @@ with st.sidebar:
     else:
         st.session_state['flota_seleccionada'] = flota_actual
 
-    # 2. FILTRO EN RUTA
-    if st.session_state['flota_seleccionada']:
-        st.checkbox(
-            "**Unidades en Ruta** (Excluir Resguardo)", 
-            key="filtro_sede",
-            on_change=actualizar_dashboard 
-        )
 
+    # --- NUEVA SECCIÓN: CONFIGURACIÓN DINÁMICA DE PARÁMETROS ---
+    # 🚨 EXPANDER INICIALMENTE CONTRAÍDO (expanded=False) y controlado por la autenticación 🚨
+    with st.expander("⚙️ **Configuración Dinámica**", expanded=st.session_state['authenticated']):
+        
+        if st.session_state['authenticated']:
+            # --- USUARIO AUTENTICADO: MOSTRAR INPUTS DE CONFIGURACIÓN ---
+            
+            # Inicializar los valores temporales con los activos al abrir el expander
+            if 'input_time_sleep_temp' not in st.session_state:
+                st.session_state['input_time_sleep_temp'] = st.session_state['config_params']['TIME_SLEEP']
+            if 'input_stop_threshold_temp' not in st.session_state:
+                st.session_state['input_stop_threshold_temp'] = st.session_state['config_params']['STOP_THRESHOLD_MINUTES']
+            if 'input_speed_threshold_temp' not in st.session_state:
+                st.session_state['input_speed_threshold_temp'] = st.session_state['config_params']['SPEED_THRESHOLD_KPH']
+            if 'input_gps_min_on_temp' not in st.session_state:
+                st.session_state['input_gps_min_on_temp'] = st.session_state['config_params']['GPS_MIN_ENCENDIDA']
+            if 'input_gps_min_off_temp' not in st.session_state:
+                st.session_state['input_gps_min_off_temp'] = st.session_state['config_params']['GPS_MIN_APAGADA']
+                
+            st.markdown("##### Frecuencia y Tiempos de App")
+            
+            # 🚨 PARÁMETRO DINÁMICO 1: TIEMPO DE PAUSA (CICLO while) 🚨
+            st.slider(
+                "Pausa del Ciclo (Segundos)", min_value=1, max_value=10, 
+                value=st.session_state['config_params']['TIME_SLEEP'], # Usar el valor actual para inicializar
+                step=1, 
+                key="input_time_sleep_temp", # Usar key temporal
+                help="Tiempo de espera entre actualizaciones completas del Dashboard (tiempo.sleep)."
+            )
+            
+            st.caption(f"TTL de Datos (API): **5 segundos** (fijo en el código, pero se limpia con cada cambio de parámetro).")
+            
+            st.markdown("##### Umbrales de Alerta")
+            
+            # 🚨 PARÁMETRO DINÁMICO 2: PARADA LARGA 🚨
+            st.number_input(
+                "Parada Larga (minutos)", min_value=1, max_value=120, 
+                value=st.session_state['config_params']['STOP_THRESHOLD_MINUTES'], # Usar el valor actual
+                step=1, 
+                key="input_stop_threshold_temp", # Usar key temporal
+                help="Tiempo inactivo fuera de sede para activar la alerta de parada larga."
+            )
+            
+            # 🚨 PARÁMETRO DINÁMICO 3: EXCESO DE VELOCIDAD 🚨
+            st.number_input(
+                "Umbral de Velocidad (Km/h)", min_value=10, max_value=120, 
+                value=st.session_state['config_params']['SPEED_THRESHOLD_KPH'], # Usar el valor actual
+                step=5, 
+                key="input_speed_threshold_temp", # Usar key temporal
+                help="Velocidad mínima para activar la alerta de exceso de velocidad."
+            )
+            
+            st.markdown("##### Falla GPS (Minutos sin Reportar)")
+            
+            # 🚨 PARÁMETRO DINÁMICO 4: FALLA GPS ENCENDIDA 🚨
+            st.number_input(
+                "Falla GPS (Motor Encendido)", min_value=1, max_value=60, 
+                value=st.session_state['config_params']['GPS_MIN_ENCENDIDA'], # Usar el valor actual
+                step=1, 
+                key="input_gps_min_on_temp", # Usar key temporal
+                help="Umbral de minutos sin reporte con ignición en True."
+            )
+            
+            # 🚨 PARÁMETRO DINÁMICO 5: FALLA GPS APAGADA 🚨
+            st.number_input(
+                "Falla GPS (Motor Apagado)", min_value=30, max_value=180, 
+                value=st.session_state['config_params']['GPS_MIN_APAGADA'], # Usar el valor actual
+                step=5, 
+                key="input_gps_min_off_temp", # Usar key temporal
+                help="Umbral de minutos sin reporte con ignición en False (70 min = 1h 10min)."
+            )
+            
+            st.markdown("---")
+
+            
+            # 🚨 BOTÓN DE GUARDAR CAMBIOS 🚨
+            st.button(
+                "💾 Guardar Cambios y Aplicar",
+                on_click=save_dynamic_config,
+                type="primary",
+                use_container_width=True,
+                key="btn_save_config"
+            )
+            
+        else:
+            # --- USUARIO NO AUTENTICADO: SOLICITAR CONTRASEÑA ---
+            st.markdown("🔒 Introduce la contraseña para acceder a la configuración dinámica.")
+            
+            password_correct = False
+            
+            # Usamos un key_temp para almacenar la entrada
+            st.text_input(
+                "Contraseña", 
+                type="password", 
+                key="config_password_input",
+                on_change=check_password,
+                label_visibility="collapsed"
+            )
+            
+            # Mostrar error si se intentó y falló (se comprueba al salir del input)
+            if 'config_password_input' in st.session_state and st.session_state['config_password_input'] and st.session_state['config_password_input'] != CONFIG_PASSWORD:
+                st.error("Contraseña incorrecta.")
+                
+            st.caption("Contraseña de acceso: `admin`")
+  
     # 3. LEYENDA DE COLORES (Ubicación fija)
     # 🚨 CAMBIO: Se envuelve la llamada en un st.expander con expanded=False 🚨
     with st.expander("##### Leyenda de Estados 🎨", expanded=False):
-        display_color_legend() 
+        display_color_legend()
+        
+# --- INICIO DEL EXPANDER DE FILTROS ---
+    if st.session_state['flota_seleccionada']:
+       
+        # 🚨 CAMBIO APLICADO: Renombrado a "Filtros de Estado 🚦" y expanded=False 🚨
+        with st.expander("Filtros de Estado 🚦", expanded=False):
+            
+            # Filtro "Unidades en Ruta" (Mismo código, ahora dentro del expander)
+            st.checkbox(
+                "**Unidades en Ruta** (Excluir Resguardo y Fallas)", 
+                key="filtro_en_ruta", 
+                on_change=actualizar_dashboard 
+            )
+            
+            # Nuevo Filtro Excluyente (Radio) para Estados Específicos
+            filtro_estado_options = [
+                "Mostrar Todos",
+                "Falla GPS 🚫", 
+                "Apagadas ❄️", 
+                "Paradas Largas 🛑", 
+                "Resguardo (Sede) 🛡️",
+                "Resguardo (Fuera de Sede) 🛡️"
+            ]
+            
+            # Inicialización del nuevo estado de sesión para el radio
+            if 'filtro_estado_especifico' not in st.session_state:
+                st.session_state['filtro_estado_especifico'] = filtro_estado_options[0]
+                
+            st.session_state['filtro_estado_especifico'] = st.radio(
+                "O estados específicos:",
+                options=filtro_estado_options,
+                key="filtro_radio",
+                index=filtro_estado_options.index(st.session_state['filtro_estado_especifico']),
+                on_change=actualizar_dashboard,
+                label_visibility="collapsed"
+            )
+# --- FIN DEL EXPANDER DE FILTROS ---
 
-    # 4. Este placeholder contendrá todas las métricas, el debug y la hora.
-    # El contenido de este placeholder se renderizará más abajo, pero la variable debe existir aquí.
+  
+
+    # 4. Placeholders de Métricas y Debug
     metricas_placeholder = st.empty() 
     
     # 5. PLACEHOLDER ALERTA PARADA LARGA
@@ -606,17 +794,21 @@ with st.sidebar:
 # === BUCLE PRINCIPAL (while True) - Lógica Completa ===
 
 placeholder = st.empty()
-
-# NUEVO PLACEHOLDER para el Historial de Logs
 log_placeholder = st.empty() 
-
-STOP_THRESHOLD_MINUTES = 10
-SPEED_THRESHOLD_KPH = 70
 
 
 while True:
     
     flota_a_usar = st.session_state['flota_seleccionada'] 
+    
+    # 🚨 LECTURA DE LOS PARÁMETROS ACTIVOS (PERSISTENTES) DE LA CONFIGURACIÓN 🚨
+    config = st.session_state['config_params']
+    STOP_THRESHOLD_MINUTES = config['STOP_THRESHOLD_MINUTES']
+    SPEED_THRESHOLD_KPH = config['SPEED_THRESHOLD_KPH']
+    GPS_MIN_ENCENDIDA = config['GPS_MIN_ENCENDIDA']
+    GPS_MIN_APAGADA = config['GPS_MIN_APAGADA']
+    TIME_SLEEP = config['TIME_SLEEP']
+    # -------------------------------------------------------------------------
 
     # --- CONDICIÓN CRÍTICA: NO EJECUTAR SI NO HAY FLOTA SELECCIONADA ---
     if not flota_a_usar:
@@ -640,7 +832,8 @@ while True:
     # --------------------------------------------------------------------------
 
     # Obtener datos (se usa el caché para evitar lentitud)
-    df_data_original = obtener_datos_unidades(flota_a_usar, FLOTAS_CONFIG)
+    # 🚨 LLAMADA A LA FUNCIÓN DE DATOS CON LOS PARÁMETROS GPS ACTIVOS 🚨
+    df_data_original = obtener_datos_unidades(flota_a_usar, FLOTAS_CONFIG, GPS_MIN_ENCENDIDA, GPS_MIN_APAGADA)
     
     is_fallback = "FALLBACK" in df_data_original["UNIDAD"].iloc[0]
     
@@ -675,6 +868,7 @@ while True:
             is_moving = velocidad > 1.0 
             # is_out_of_hq ahora también excluye el nuevo estado "Resguardo (Fuera de Sede)" Y "Falla GPS"
             is_out_of_hq = not ("(Sede)" in row['IGNICION'] or "Resguardo" in row['IGNICION'] or "Falla GPS" in row['IGNICION'])
+            # 🚨 USO DEL PARÁMETRO DINÁMICO DE VELOCIDAD 🚨
             is_speeding = velocidad >= SPEED_THRESHOLD_KPH
 
             # --- LÓGICA DE EXCESO DE VELOCIDAD (START/UPDATE) ---
@@ -760,21 +954,66 @@ while True:
                 df_data_original.loc[index, 'STOP_DURATION_TIMEDELTA'] = stop_duration_timedelta
                 
                 # LÓGICA para marcar una parada larga *activa* (para logearla luego al moverse)
+                # 🚨 USO DEL PARÁMETRO DINÁMICO DE PARADA LARGA 🚨
                 if stop_duration_minutes > STOP_THRESHOLD_MINUTES and is_out_of_hq:
                     last_state['alerted_stop_minutes'] = stop_duration_minutes
                 
-            # ❌ CORRECCIÓN 1 APLICADA: Línea eliminada que causaba KeyError.
-            # st.session_state['unidades_stop_state'][unit_id_api] = last_state 
     
     # Lógica de Filtrado Condicional
     df_data_mostrada = df_data_original
+    
+    # Obtener los estados de sesión
+    filtro_en_ruta_activo = st.session_state.get("filtro_en_ruta", False) # Usamos la nueva key 'filtro_en_ruta'
+    filtro_estado_activo = st.session_state.get('filtro_estado_especifico', "Mostrar Todos")
+    
     filtro_descripcion = "Todas las Unidades"
+    
+    # 1. Aplicar filtro de ESTADO ESPECÍFICO (tiene prioridad sobre "Unidades en Ruta")
+    if not is_fallback and filtro_estado_activo != "Mostrar Todos":
+        
+        # Lógica para Falla GPS, Apagadas, Resguardo (Sede), Resguardo (Fuera de Sede)
+        if "Falla GPS" in filtro_estado_activo:
+            df_data_mostrada = df_data_original[df_data_original["IGNICION"].str.contains("Falla GPS")]
+            filtro_descripcion = filtro_estado_activo
+        
+        elif "Apagadas" in filtro_estado_activo:
+            # Apagadas ❄️ es el estado fuera de sede/resguardo
+            df_data_mostrada = df_data_original[df_data_original["IGNICION"].str.contains("Apagada ❄️")]
+            filtro_descripcion = filtro_estado_activo
+            
+        elif "Resguardo (Sede)" in filtro_estado_activo:
+            # Incluye tanto 'Resguardo (Sede)' (apagada) como 'Encendida (Sede)' (encendida)
+            df_data_mostrada = df_data_original[df_data_original["IGNICION"].str.contains("Resguardo \(Sede\)|Encendida \(Sede\)")].copy()
+            filtro_descripcion = filtro_estado_activo
+            
+        elif "Resguardo (Fuera de Sede)" in filtro_estado_activo:
+            df_data_mostrada = df_data_original[df_data_original["IGNICION"].str.contains("Resguardo \(Fuera de Sede\)")].copy()
+            filtro_descripcion = filtro_estado_activo
+        
+        # Lógica especial para Paradas Largas (usa el tiempo de parada)
+        elif "Paradas Largas" in filtro_estado_activo:
+            # Definimos si está en ruta (excluye Resguardo, Sede Y Falla GPS)
+            is_out_of_hq_status = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS")
+            
+            df_data_mostrada = df_data_original[
+                # 🚨 USO DEL PARÁMETRO DINÁMICO DE PARADA LARGA 🚨
+                (df_data_original['STOP_DURATION_MINUTES'] > STOP_THRESHOLD_MINUTES) &
+                (df_data_original['VELOCIDAD'] < 1.0) &
+                is_out_of_hq_status
+            ].copy()
+            filtro_descripcion = filtro_estado_activo
 
-    if not is_fallback and st.session_state.get("filtro_sede", False):
+    # 2. Aplicar filtro "Unidades en Ruta" (Solo si no hay filtro específico y el filtro está activo)
+    elif not is_fallback and filtro_en_ruta_activo:
         # Excluimos Resguardo, Encendida (Sede), Resguardo (Fuera de Sede) Y Falla GPS
         is_en_ruta = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS")
-        df_data_mostrada = df_data_original[is_en_ruta].reset_index(drop=True)
+        df_data_mostrada = df_data_original[is_en_ruta].copy()
         filtro_descripcion = "Unidades Fuera de Sede 🛣️"
+        
+    # Reiniciar el índice del DataFrame después del filtro
+    if not is_fallback:
+        df_data_mostrada = df_data_mostrada.reset_index(drop=True)
+    # FIN DE LA LÓGICA DE FILTRADO
     
     # Lógica de Detección y Construcción de Alerta de Parada Larga (Alertas Visibles)
     unidades_en_alerta_stop = pd.DataFrame()
@@ -782,6 +1021,7 @@ while True:
 
     if not is_fallback:
         # Se excluyen Resguardo, Sede Y Falla GPS
+        # 🚨 USO DEL PARÁMETRO DINÁMICO DE PARADA LARGA 🚨
         todas_las_alertas_stop = df_data_original[
             (df_data_original['STOP_DURATION_MINUTES'] > STOP_THRESHOLD_MINUTES) &
             (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS"))
@@ -818,6 +1058,7 @@ while True:
 
     if not is_fallback:
         # Se excluyen Resguardo, Sede Y Falla GPS
+        # 🚨 USO DEL PARÁMETRO DINÁMICO DE VELOCIDAD 🚨
         todas_las_alertas_speed = df_data_original[
             (df_data_original['VELOCIDAD'] >= SPEED_THRESHOLD_KPH) &
             (~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS"))
@@ -844,7 +1085,8 @@ while True:
             for _, row in unidades_en_alerta_speed.head(5).iterrows():
                 nombre_unidad = row['UNIDAD'].split('-')[0]
                 velocidad_formateada = f"{row['VELOCIDAD']:.1f} Km/h"
-                estado_critico = "🚨 CRÍTICO" if row['VELOCIDAD'] > 74.0 else "⚠️ ALERTA"
+                # 🚨 USO DEL PARÁMETRO DINÁMICO DE VELOCIDAD 🚨
+                estado_critico = "🚨 CRÍTICO" if row['VELOCIDAD'] > SPEED_THRESHOLD_KPH + 4.0 else "⚠️ ALERTA"
                 mensaje_alerta_speed += (f"**{nombre_unidad}** ({estado_critico} a {velocidad_formateada}):\n---\n")
     
     # --- 1. RENDERIZADO DEL TEXT BOX DE ALERTA (PARADA LARGA) ---
@@ -1052,7 +1294,7 @@ while True:
                 st.header("DEBUG API STATUS")
                 
                 st.success(f"Conexión **OK**. Se recibieron {total_unidades_flota} registros.") 
-                if st.session_state.get("filtro_sede", False):
+                if filtro_estado_activo != "Mostrar Todos" or filtro_en_ruta_activo:
                     st.info(f"Filtro Activo: **{filtro_descripcion}**. Mostrando **{len(df_data_mostrada)}** unidades.")
                 
         else:
@@ -1127,6 +1369,7 @@ while True:
                         # Si NO es Falla GPS, verificamos otras alertas:
                         else:
                             # Resaltado visual para Parada Larga (Solo si no es Falla GPS)
+                            # 🚨 USO DEL PARÁMETRO DINÁMICO DE PARADA LARGA 🚨
                             if stop_duration > STOP_THRESHOLD_MINUTES and velocidad_float < 1.0 and is_out_of_hq_status:
                                 parada_display = f"Parada Larga 🛑: {stop_duration:.0f} min"
                                 card_style = "background-color: #FFC107; padding: 15px; border-radius: 5px; color: black; margin-bottom: 0px;" 
@@ -1134,9 +1377,11 @@ while True:
                                 color_velocidad = "black"
                                 
                             # Resaltado visual para Exceso de Velocidad (Solo si no es Falla GPS ni Parada Larga)
-                            elif velocidad_float > 74.0:
+                            # 🚨 USO DEL PARÁMETRO DINÁMICO DE VELOCIDAD 🚨
+                            elif velocidad_float > SPEED_THRESHOLD_KPH + 4.0: # Umbral + 4 para visual crítico
                                 color_velocidad = "#D32F2F" # ROJO (Crítico)
                                 estado_display = "EXCESO VELOCIDAD 🚨"
+                            # 🚨 USO DEL PARÁMETRO DINÁMICO DE VELOCIDAD 🚨
                             elif velocidad_float >= SPEED_THRESHOLD_KPH:
                                 color_velocidad = "#FF9800" # NARANJA (Alerta)
                                 estado_display = "Alerta Velocidad ⚠️" 
@@ -1161,7 +1406,8 @@ while True:
                         st.markdown('</div>', unsafe_allow_html=True)
 
                         # Botón de Ubicación
-                        with st.expander("Detalles ℹ️"):
+                        # NOTA: Ahora inicia CONTRAÍDO (expanded=False)
+                        with st.expander("Detalles ℹ️", expanded=False):
                             stop_timedelta_card = row['STOP_DURATION_TIMEDELTA']
                             tiempo_parado_display = f"{int(stop_timedelta_card.total_seconds() // 60)} min {int(stop_timedelta_card.total_seconds() % 60):02} seg"
                             
@@ -1186,11 +1432,11 @@ while True:
                             if not falla_motivo:
                                 st.caption(f"Último Reporte: **{last_report_display}**")
                                 
-                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})")
+                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})\")")
                         
                 st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             
     st.markdown("---")
     
-    # PAUSA DE 3 SEGUNDOS
-    time.sleep(3)
+    # 🚨 USO DEL PARÁMETRO DINÁMICO DE PAUSA 🚨
+    time.sleep(TIME_SLEEP)

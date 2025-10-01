@@ -53,7 +53,7 @@ def verificar_falla_gps(unidad_data: Dict[str, Any], hora_venezuela: datetime) -
     
     # 3. Definir los umbrales de tiempo
     UMBRAL_ENCENDIDA = timedelta(minutes=5)
-    UMBRAL_APAGADA = timedelta(hours=1)
+    UMBRAL_APAGADA = timedelta(hours=1, minutes=10) 
     
     # 4. Aplicar la lógica de Falla GPS
     es_falla_gps = False

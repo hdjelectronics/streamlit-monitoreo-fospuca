@@ -10,6 +10,7 @@ import base64
 import os
 from datetime import datetime, timedelta, timezone
 
+
 # --- CONFIGURACIÓN DE ZONA HORARIA Y LÓGICA DE TIEMPO ---
 
 # Definir la zona horaria de Venezuela (VET = UTC-4)
@@ -21,6 +22,14 @@ COLOR_FALLA_GPS = "#AAAAAA" # Gris para Falla GPS
 # --- 🔒 CONSTANTE DE CONTRASEÑA 🔒 ---
 CONFIG_PASSWORD = "admin" # <-- ¡CÁMBIALA AQUÍ!
 # -------------------------------------
+
+# --- 🚨 NUEVAS CONSTANTES DE COLOR PARA UBICACIONES DINÁMICAS 🚨 ---
+PROXIMIDAD_KM = 0.1 # Distancia de la sede (PARA ASUMIR EN SEDE/VERTEDERO)
+
+COLOR_RESGUARDO_SECUNDARIO = "#191452" 
+COLOR_VERTEDERO = "#FCC6BB" # ¡COLOR ACTUALIZADO SEGÚN SOLICITUD!
+# ----------------------------------------------------------------------
+
 
 def obtener_hora_venezuela() -> datetime:
     """Retorna el objeto datetime con la hora actual en la Zona Horaria de Venezuela (VET)."""
@@ -135,7 +144,6 @@ def reproducir_alerta_sonido(base64_str):
     </script>
     """
     st.markdown(audio_html, unsafe_allow_html=True)
-    
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Monitoreo GPS - FOSPUCA",
@@ -203,10 +211,20 @@ def cargar_configuracion_flotas(config_dir: str = CONFIG_DIR) -> Dict[str, Dict[
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
-                    if all(key in data for key in ["ids", "lat_sede", "lon_sede"]):
+                    # 🚨 MODIFICACIÓN CLAVE: Ahora se valida la existencia de 'sede_coords'.
+                    if all(key in data for key in ["ids", "sede_coords"]):
+                        
+                        # Hacemos que 'resguardo_secundario_coords' sea opcional.
+                        if "resguardo_secundario_coords" not in data:
+                            data["resguardo_secundario_coords"] = []
+                            
+                        # 🚨 ¡NUEVO! Hacemos que 'vertedero_coords' sea opcional.
+                        if "vertedero_coords" not in data:
+                            data["vertedero_coords"] = []
+
                         flotas_config[nombre_flota] = data
                     else:
-                        print(f" [ADVERTENCIA] Archivo '{filename}' omitido: faltan claves (ids, lat_sede, lon_sede).")
+                        print(f" [ADVERTENCIA] Archivo '{filename}' omitido: faltan claves obligatorias (ids, sede_coords).")
 
             except json.JSONDecodeError:
                 print(f" [ERROR] No se pudo parsear el archivo JSON: {filename}. Revisa su formato.")
@@ -218,20 +236,22 @@ def cargar_configuracion_flotas(config_dir: str = CONFIG_DIR) -> Dict[str, Dict[
 # --- CONFIGURACIÓN MULTI-FLOTA (Se carga dinámicamente) ---
 FLOTAS_CONFIG = cargar_configuracion_flotas()
 
+# --- VERIFICACIÓN DE CARGA DE CONFIGURACIÓN ---
+if not FLOTAS_CONFIG:
+    # Esta verificación asegura que si falla la carga al inicio, la app muestra un mensaje útil.
+    st.set_page_config(page_title="Error de Configuración", layout="wide")
+    st.error("❌ **ERROR CRÍTICO DE CARGA DE FLOTAS** ❌")
+    st.markdown("---")
+    st.warning("No se pudieron cargar flotas. Por favor, verifica lo siguiente:")
+    st.markdown("""
+        1.  Asegúrate de tener la carpeta **`configuracion_flotas`** al lado de `dashboard.py`.
+        2.  Revisa que tus archivos JSON estén dentro de esa carpeta.
+        3.  Verifica que **TODOS** los archivos JSON utilicen el formato con **`"ids"`** y **`"sede_coords"`** (ej: `"sede_coords": [[10.456, -66.123]]`).
+    """)
+    st.stop() 
+
+
 # -----------------------------------------------------------
-# --- DISTANCIA DE LA SEDE (PARA ASUMIR EN SEDE) (100MTS fijos) ---
-PROXIMIDAD_KM = 0.1
-
-# --- 🚨 RESGUARDOS FUERA DE SEDE 🚨 ---
-COLOR_RESGUARDO_SECUNDARIO = "#191452" 
-
-# Lista de coordenadas de resguardo secundario [Latitud, Longitud]
-COORDENADAS_RESGUARDO_SECUNDARIO = [
-    [10.975240, -63.836690],
-    [10.998340, -63.799760],
-    [11.004680, -63.798240] 
-]
-# ----------------------------------------------------------------------
 
 # --- ENCABEZADO DE AUTENTICACION ---
 HEADERS = {
@@ -260,7 +280,11 @@ def get_card_style(ignicion_status, speed):
     bg_color = "#4CAF50" # Verde
     text_color = "white"
 
-    if "Resguardo (Sede)" in ignicion_status:
+    if "Vertedero" in ignicion_status:
+        bg_color = COLOR_VERTEDERO
+        text_color = "white" 
+
+    elif "Resguardo (Sede)" in ignicion_status:
         bg_color = "#337ab7"
     elif "Encendida (Sede)" in ignicion_status:
         bg_color = "#B37305"  
@@ -270,7 +294,7 @@ def get_card_style(ignicion_status, speed):
         bg_color = COLOR_RESGUARDO_SECUNDARIO
     elif "Falla GPS" in ignicion_status:
         bg_color = COLOR_FALLA_GPS
-        text_color = "black"
+        text_color = "white"
         
     style = (
         f"background-color: {bg_color}; "
@@ -312,7 +336,11 @@ def get_fallback_data(error_type="Conexión Fallida"):
         "FALLA_GPS_MOTIVO": None,
         "LAST_REPORT_TIME_DISPLAY": None,
         "STOP_DURATION_MINUTES": 0.0, # Añadido para consistencia
-        "STOP_DURATION_TIMEDELTA": timedelta(seconds=0) # Añadido para consistencia
+        "STOP_DURATION_TIMEDELTA": timedelta(seconds=0), # Añadido para consistencia
+        "EN_SEDE_FLAG": False, # Añadido para consistencia
+        "EN_RESGUARDO_SECUNDARIO_FLAG": False, # Añadido para consistencia
+        "EN_VERTEDERO_FLAG": False, # NUEVO FLAG
+        "ES_FALLA_GPS_FLAG": False # Añadido para consistencia
     }])
 
 # --- FUNCIÓN DE OBTENCIÓN Y FILTRADO DE DATOS DINÁMICA (TTL de 5 segundos) ---
@@ -326,10 +354,16 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
         # Esto no debería pasar si la lógica de selección en el sidebar es correcta
         return get_fallback_data("Configuración de Flota No Encontrada")
 
-    LAT_SEDE = flota_data["lat_sede"]
-    LON_SEDE = flota_data["lon_sede"]
+    # 🚨 OBTENCIÓN DE COORDENADAS DE UBICACIONES DINÁMICAS DESDE EL JSON 🚨
+    # Todas son listas de listas de [lat, lon]
+    SEDE_COORDS = flota_data.get("sede_coords", [])
+    COORDENADAS_RESGUARDO_SECUNDARIO = flota_data.get("resguardo_secundario_coords", [])
+    COORDENADAS_VERTEDERO = flota_data.get("vertedero_coords", []) # ¡NUEVO!
+    
+    if not SEDE_COORDS:
+        return get_fallback_data("Error de Configuración: 'sede_coords' vacía.")
 
-    # Optimización: el tamaño de la página ya no necesita calcularse
+    # Aseguramos un tamaño de página suficiente para todos los IDs
     payload = {
         "userid": "82825",
         "requesttype": 0,
@@ -341,7 +375,6 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
         "elements": 1,
         "ids": flota_data["ids"], 
         "method": "usersearchplatform",
-        # Aseguramos un tamaño de página suficiente para todos los IDs
         "pagesize": len(flota_data["ids"].split(',')) + 5, 
         "prefix": True
     }
@@ -391,18 +424,33 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
                 # Para fines de métricas, marcamos el tipo de resguardo como NINGUNO
                 en_sede = False
                 en_resguardo_secundario = False
+                en_vertedero = False # ¡NUEVO FLAG!
                 
             else:
-                # --- LÓGICA EXISTENTE DE ESTADO (IGNICIÓN/SEDE/RESGUARDO) ---
+                # --- CÁLCULO DE DISTANCIA A UBICACIONES DINÁMICAS ---
                 
-                # CÁLCULO DE DISTANCIA A LA SEDE PRINCIPAL
-                distancia = haversine(lat, lon, LAT_SEDE, LON_SEDE)
-                en_sede = distancia <= PROXIMIDAD_KM
+                # 1. ¿Está en el VERTEDERO? (Máxima Prioridad Operacional)
+                en_vertedero = False
+                for vertedero_coords in COORDENADAS_VERTEDERO:
+                    v_lat, v_lon = vertedero_coords
+                    distancia = haversine(lat, lon, v_lat, v_lon)
+                    if distancia <= PROXIMIDAD_KM:
+                        en_vertedero = True
+                        break 
                 
-                # CÁLCULO DE DISTANCIA A LAS UBICACIONES DE RESGUARDO SECUNDARIO
+                # 2. ¿Está en la SEDE? (Revisar solo si NO está en Vertedero)
+                en_sede = False
+                if not en_vertedero:
+                    for sede_coords in SEDE_COORDS:
+                        lat_sede, lon_sede = sede_coords
+                        distancia = haversine(lat, lon, lat_sede, lon_sede)
+                        if distancia <= PROXIMIDAD_KM:
+                            en_sede = True
+                            break 
+                
+                # 3. ¿Está en Resguardo Secundario? (Revisar solo si NO está en Vertedero ni Sede)
                 en_resguardo_secundario = False
-                # Pequeña optimización: no calcular si ya está en sede
-                if not en_sede: 
+                if not en_vertedero and not en_sede and COORDENADAS_RESGUARDO_SECUNDARIO: 
                     for resguardo_coords in COORDENADAS_RESGUARDO_SECUNDARIO:
                         lat_res, lon_res = resguardo_coords
                         distancia_resguardo = haversine(lat, lon, lat_res, lon_res)
@@ -410,21 +458,30 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
                             en_resguardo_secundario = True
                             break
                 
+                # --- LÓGICA DE ESTADO FINAL ---
+                
                 estado_final_display = "Apagada ❄️" 
                 color_fondo = "#D32F2F" 
+                color_texto = "white"
                 
-                if ignicion_estado:
+                if en_vertedero:
+                    estado_final_display = "Vertedero 🚛"; 
+                    color_fondo = COLOR_VERTEDERO
+                    color_texto = "white" 
+                
+                elif ignicion_estado:
                     if en_sede:
                         estado_final_display = "Encendida (Sede) 🔥"; color_fondo = "#B37305"
                     else:
                         estado_final_display = "Encendida 🔥"; color_fondo = "#4CAF50"
-                else:
+                
+                else: # Apagada
                     if en_sede:
                         estado_final_display = "Resguardo (Sede) 🛡️"; color_fondo = "#337ab7"
                     elif en_resguardo_secundario:
                         estado_final_display = "Resguardo (Fuera de Sede) 🛡️"; color_fondo = COLOR_RESGUARDO_SECUNDARIO
                 
-                card_style = f"background-color: {color_fondo}; padding: 15px; border-radius: 5px; color: white; margin-bottom: 0px;"
+                card_style = f"background-color: {color_fondo}; padding: 15px; border-radius: 5px; color: {color_texto}; margin-bottom: 0px;"
 
             datos_filtrados.append({
                 "UNIDAD": unidad_con_falla_check.get("name", "N/A"),
@@ -439,9 +496,10 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
                 "LAST_REPORT_TIME_DISPLAY": last_report_time_display,
                 "STOP_DURATION_MINUTES": 0.0, # Inicializado para el DataFrame
                 "STOP_DURATION_TIMEDELTA": timedelta(seconds=0), # Inicializado para el DataFrame
-                # NUEVAS COLUMNAS PARA MÉTRICAS
+                # NUEVAS COLUMNAS PARA MÉTRICAS (incluido Vertedero)
                 "EN_SEDE_FLAG": en_sede,
                 "EN_RESGUARDO_SECUNDARIO_FLAG": en_resguardo_secundario,
+                "EN_VERTEDERO_FLAG": en_vertedero, # ¡NUEVO FLAG!
                 "ES_FALLA_GPS_FLAG": es_falla_gps
             })
         
@@ -458,11 +516,13 @@ def obtener_datos_unidades(nombre_flota: str, config: Dict[str, Any], gps_min_en
 def display_color_legend():
     """Muestra la leyenda de colores de las tarjetas de estado de forma compacta."""
     
+    # 🚨 LEYENDA ACTUALIZADA CON EL NUEVO COLOR 🚨
     COLOR_MAP = {
         "#4CAF50": "Encendida en Ruta",             
         "#D32F2F": "Apagada",                      
         "#337ab7": "Resguardo (Sede)",             
         COLOR_RESGUARDO_SECUNDARIO: "Resguardo (F. Sede)", 
+        COLOR_VERTEDERO: "En Vertedero", # ¡NUEVO COLOR!
         "#B37305": "Encendida (Sede)",             
         "#FFC107": "Parada Larga",                 
         COLOR_FALLA_GPS: "Falla GPS",              
@@ -472,11 +532,14 @@ def display_color_legend():
     col_index = 0
     
     for color, description in COLOR_MAP.items():
+        # Determina si el texto debe ser negro para fondos claros
+        text_color = "white"  
+        
         with cols_legend[col_index % 2]:
             legend_html = f"""
             <div style="display: flex; align-items: center; margin-bottom: 3px;">
                 <div style="width: 14px; height: 14px; background-color: {color}; border-radius: 3px; margin-right: 5px; border: 1px solid #ddd;"></div>
-                <span style="font-size: 0.85em;">{description}</span>
+                <span style="font-size: 0.85em; color: {text_color};">{description}</span>
             </div>
             """
             st.markdown(legend_html, unsafe_allow_html=True)
@@ -506,10 +569,9 @@ def save_dynamic_config():
     st.cache_data.clear()
     
     st.toast("✅ Configuración guardada y aplicada!", icon='💾')
-# -------------------------------------------------
-
 
 # --- INICIALIZACIÓN DEL ESTADO DE SESIÓN ---
+
 if 'flota_seleccionada' not in st.session_state:
     st.session_state['flota_seleccionada'] = None 
 if 'filtro_en_ruta' not in st.session_state: 
@@ -532,6 +594,7 @@ if 'config_params' not in st.session_state:
 @st.cache_resource(ttl=None) 
 def get_global_stop_state() -> Dict[str, Any]:
     """Retorna un diccionario de estado que es único y compartido por todos los usuarios (Global State)."""
+    # Usaremos una simple clave para almacenar el estado de cada unidad
     return {}
 
 # Inicializar y obtener la referencia al estado global (se ejecuta una sola vez)
@@ -690,8 +753,10 @@ with st.sidebar:
                 on_change=actualizar_dashboard 
             )
             
+            # 🚨 FILTRO ACTUALIZADO CON VERTEDERO 🚨
             filtro_estado_options = [
                 "Mostrar Todos",
+                "Vertedero 🚛", # ¡NUEVO FILTRO!
                 "Falla GPS 🚫", 
                 "Apagadas ❄️", 
                 "Paradas Largas 🛑", 
@@ -794,7 +859,7 @@ while True:
     # --------------------------------------------------------------------------
 
     # Obtener datos
-    # 🚨 NOTA: La función obtener_datos_unidades ahora retorna flags EN_SEDE_FLAG, EN_RESGUARDO_SECUNDARIO_FLAG y ES_FALLA_GPS_FLAG
+    # 🚨 NOTA: La función obtener_datos_unidades ahora retorna flags EN_VERTEDERO_FLAG
     df_data_original = obtener_datos_unidades(flota_a_usar, FLOTAS_CONFIG, GPS_MIN_ENCENDIDA, GPS_MIN_APAGADA)
     
     is_fallback = "FALLBACK" in df_data_original["UNIDAD"].iloc[0]
@@ -822,8 +887,8 @@ while True:
             last_state = current_stop_state[unit_id_api]
             is_moving = velocidad > 1.0 
             
-            # Determinar si la unidad NO está en ninguna zona de resguardo/sede
-            is_out_of_hq = not (row['EN_SEDE_FLAG'] or row['EN_RESGUARDO_SECUNDARIO_FLAG'] or row['ES_FALLA_GPS_FLAG'])
+            # Determinar si la unidad NO está en ninguna zona de resguardo/sede/vertedero
+            is_out_of_hq = not (row['EN_SEDE_FLAG'] or row['EN_RESGUARDO_SECUNDARIO_FLAG'] or row['EN_VERTEDERO_FLAG'] or row['ES_FALLA_GPS_FLAG'])
             
             is_speeding = velocidad >= SPEED_THRESHOLD_KPH
 
@@ -919,7 +984,10 @@ while True:
         # 1. Aplicar filtro de ESTADO ESPECÍFICO
         if filtro_estado_activo != "Mostrar Todos":
             
-            if "Falla GPS" in filtro_estado_activo:
+            if "Vertedero" in filtro_estado_activo: # ¡NUEVO FILTRO!
+                df_data_mostrada = df_data_original[df_data_original["EN_VERTEDERO_FLAG"] == True]
+
+            elif "Falla GPS" in filtro_estado_activo:
                 df_data_mostrada = df_data_original[df_data_original["IGNICION"].str.contains("Falla GPS")]
             
             elif "Apagadas" in filtro_estado_activo:
@@ -934,7 +1002,7 @@ while True:
                 df_data_mostrada = df_data_original[df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] == True]
             
             elif "Paradas Largas" in filtro_estado_activo:
-                is_out_of_hq_status = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS")
+                is_out_of_hq_status = ~df_data_original["IGNICION"].str.contains("(Sede)|Resguardo|Falla GPS|Vertedero") # ACTUALIZADO
                 
                 df_data_mostrada = df_data_original[
                     (df_data_original['STOP_DURATION_MINUTES'] > STOP_THRESHOLD_MINUTES) &
@@ -946,8 +1014,8 @@ while True:
 
         # 2. Aplicar filtro "Unidades en Ruta"
         elif filtro_en_ruta_activo:
-            # En ruta significa: NO está en sede, NO en resguardo secundario, NO es Falla GPS
-            is_en_ruta = ~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG'])
+            # En ruta significa: NO está en sede, NO en resguardo secundario, NO en vertedero, NO es Falla GPS
+            is_en_ruta = ~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['EN_VERTEDERO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG'])
             df_data_mostrada = df_data_original[is_en_ruta].copy()
             filtro_descripcion = "Unidades Fuera de Sede 🛣️"
             
@@ -959,9 +1027,10 @@ while True:
     mensaje_alerta_stop = ""
 
     if not is_fallback:
+        # La condición de parada larga incluye ahora NO estar en Vertedero
         todas_las_alertas_stop = df_data_original[
             (df_data_original['STOP_DURATION_MINUTES'] > STOP_THRESHOLD_MINUTES) &
-            (~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG']))
+            (~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['EN_VERTEDERO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG']))
         ].copy()
 
         unidades_pendientes_stop = [
@@ -994,9 +1063,10 @@ while True:
     mensaje_alerta_speed = ""
 
     if not is_fallback:
+        # La condición de exceso de velocidad incluye ahora NO estar en Vertedero
         todas_las_alertas_speed = df_data_original[
             (df_data_original['VELOCIDAD'] >= SPEED_THRESHOLD_KPH) &
-            (~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG']))
+            (~(df_data_original['EN_SEDE_FLAG'] | df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'] | df_data_original['EN_VERTEDERO_FLAG'] | df_data_original['ES_FALLA_GPS_FLAG']))
         ].copy()
 
         unidades_pendientes_speed = [
@@ -1095,7 +1165,7 @@ while True:
     with metricas_placeholder.container():
         if not is_fallback: 
             
-            # Lógica para calcular métricas (¡CORREGIDA PARA SEPARAR RESGUARDOS!)
+            # Lógica para calcular métricas
             total_unidades = len(df_data_original)
             
             # Unidades encendidas (Incluye Encendida en Sede y Encendida en Ruta)
@@ -1110,6 +1180,9 @@ while True:
             # Unidades en Resguardo (Fuera de Sede) (Usa el nuevo flag EN_RESGUARDO_SECUNDARIO_FLAG)
             unidades_resguardo_fuera_sede = df_data_original['EN_RESGUARDO_SECUNDARIO_FLAG'].sum()
             
+            # Unidades en Vertedero (¡NUEVO!)
+            unidades_en_vertedero = df_data_original['EN_VERTEDERO_FLAG'].sum()
+            
             # Unidades Falla GPS (Usa el nuevo flag ES_FALLA_GPS_FLAG)
             unidades_falla_gps = df_data_original['ES_FALLA_GPS_FLAG'].sum()
             
@@ -1122,15 +1195,21 @@ while True:
                 st.markdown(format_metric_line("Encendidas", unidades_encendidas), unsafe_allow_html=True)
                 st.markdown(format_metric_line("Apagadas (Ruta)", unidades_apagadas), unsafe_allow_html=True)
                 st.markdown("---")
+                st.markdown(format_metric_line("Ubicación Crítica", is_section_title=True), unsafe_allow_html=True)
+                
+                # METRICA 3: EN VERTEDERO
+                st.markdown(format_metric_line("En Vertedero", unidades_en_vertedero), unsafe_allow_html=True)
+                
+                st.markdown("---")
                 st.markdown(format_metric_line("Resguardo y Fallas", is_section_title=True), unsafe_allow_html=True)
                 
-                # METRICA CORREGIDA 1: EN SEDE
+                # METRICA 1: EN SEDE
                 st.markdown(format_metric_line("En Sede", unidades_en_sede), unsafe_allow_html=True)
                 
-                # METRICA CORREGIDA 2: RESGUARDO FUERA DE SEDE
+                # METRICA 2: RESGUARDO FUERA DE SEDE
                 st.markdown(format_metric_line("Resguardo (F. Sede)", unidades_resguardo_fuera_sede), unsafe_allow_html=True)
                 
-                # METRICA CORREGIDA 3: FALLA GPS
+                # METRICA 4: FALLA GPS
                 st.markdown(format_metric_line("Falla GPS", unidades_falla_gps), unsafe_allow_html=True)
             # FIN DEL DESPLEGABLE
             
@@ -1179,6 +1258,9 @@ while True:
              st.info(f"No hay unidades que cumplan el filtro **'{filtro_descripcion}'** para la flota **{flota_a_usar}** en este momento.")
 
         else:
+            
+            # COMIENZO DEL RENDERIZADO DE TARJETAS
+            
             COLUMNS_PER_ROW = 5
             rows = [df_data_mostrada[i:i + COLUMNS_PER_ROW] for i in range(0, len(df_data_mostrada), COLUMNS_PER_ROW)]
 
@@ -1200,8 +1282,8 @@ while True:
                         estado_display = estado_ignicion 
                         color_velocidad = "white"
                         
-                        # Determinar si la unidad NO está en ninguna zona de resguardo/sede
-                        is_out_of_hq_status = not (row['EN_SEDE_FLAG'] or row['EN_RESGUARDO_SECUNDARIO_FLAG'] or row['ES_FALLA_GPS_FLAG'])
+                        # Determinar si la unidad NO está en ninguna zona crítica
+                        is_out_of_hq_status = not (row['EN_SEDE_FLAG'] or row['EN_RESGUARDO_SECUNDARIO_FLAG'] or row['EN_VERTEDERO_FLAG'] or row['ES_FALLA_GPS_FLAG'])
                         
                         # Lógica de Precedencia: Falla GPS > Parada Larga > Exceso de Velocidad
                         
@@ -1234,9 +1316,14 @@ while True:
                             f'</p>',
                             unsafe_allow_html=True
                         )
+                        # El texto de la velocidad debe ser negro si el fondo es claro (Vertedero o Falla GPS)
+                        final_text_color = "black" if COLOR_VERTEDERO == "#FCC6BB" and row['EN_VERTEDERO_FLAG'] else color_velocidad
+                        if row['ES_FALLA_GPS_FLAG']:
+                            final_text_color = "black"
+                            
                         st.markdown(
                             f'<p style="display: flex; align-items: center; justify-content: center; font-size: 1.9em; font-weight: 900; margin-top: 0px;">'
-                            f'📍 <span style="margin-left: 8px; color: {color_velocidad};">{velocidad_formateada} Km</span>'
+                            f'📍 <span style="margin-left: 8px; color: {final_text_color};">{velocidad_formateada} Km</span>'
                             f'</p>',
                             unsafe_allow_html=True
                         )
@@ -1265,7 +1352,7 @@ while True:
                             if not falla_motivo:
                                 st.caption(f"Último Reporte: **{last_report_display}**")
                                 
-                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})")
+                            st.caption(f"Coordenadas: ({row['LONGITUD']:.4f}, {row['LATITUD']:.4f})\r\n")
                         
                 st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             
